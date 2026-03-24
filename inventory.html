@@ -423,6 +423,10 @@
   <div class="modal">
     <h2>履歴を追加 <button class="modal-close" onclick="closeModal('addHistory')">&times;</button></h2>
     <div class="form-group">
+      <label class="form-label">発注日</label>
+      <input class="form-input" id="histDate" type="date">
+    </div>
+    <div class="form-group">
       <label class="form-label">仕入れ先</label>
       <select class="form-select" id="histVendor" onchange="updateHistProducts()"></select>
     </div>
@@ -1008,6 +1012,8 @@ function deleteProduct() {
 let manualHistoryItems = {}; // productId -> quantity
 
 function initHistoryModal() {
+  // 今日の日付をデフォルトに
+  document.getElementById('histDate').value = new Date().toISOString().slice(0, 10);
   const sel = document.getElementById('histVendor');
   sel.innerHTML = DATA.vendors.map(v =>
     `<option value="${v.id}"${v.id === currentVendorId ? ' selected' : ''}>${esc(v.name)}</option>`
@@ -1059,7 +1065,8 @@ function saveManualHistory() {
     return;
   }
 
-  const now = new Date().toISOString();
+  const dateVal = document.getElementById('histDate').value;
+  const orderDate = dateVal ? new Date(dateVal + 'T12:00:00').toISOString() : new Date().toISOString();
   entries.forEach(([productId, quantity]) => {
     const p = DATA.products.find(x => x.id === productId);
     if (!p) return;
@@ -1069,7 +1076,7 @@ function saveManualHistory() {
       vendorId: p.vendorId,
       productName: p.name,
       vendorName: DATA.vendors.find(v => v.id === p.vendorId)?.name || '',
-      date: now,
+      date: orderDate,
       quantity,
       stockAtOrder: p.stock,
     });
