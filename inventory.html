@@ -1,0 +1,1456 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#1a1a2e">
+  <title>在庫管理</title>
+  <link rel="manifest" href="data:application/json,{%22name%22:%22在庫管理%22,%22short_name%22:%22在庫%22,%22display%22:%22standalone%22,%22background_color%22:%22%231a1a2e%22,%22theme_color%22:%22%231a1a2e%22}">
+  <style>
+    :root {
+      --bg: #0f0f1a;
+      --surface: #1a1a2e;
+      --surface2: #232340;
+      --accent: #6c63ff;
+      --accent-light: #8b85ff;
+      --danger: #ff6b6b;
+      --success: #51cf66;
+      --warning: #ffd43b;
+      --text: #e8e8f0;
+      --text-sub: #8888a0;
+      --radius: 14px;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-user-select: none;
+      user-select: none;
+      min-height: 100dvh;
+    }
+
+    /* ===== Header ===== */
+    .header {
+      background: var(--surface);
+      padding: 16px 20px 12px;
+      position: fixed; top: 0; left: 0; right: 0;
+      z-index: 100;
+      border-bottom: 1px solid rgba(108,99,255,0.2);
+    }
+    .header-top {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .header h1 {
+      font-size: 20px; font-weight: 700;
+      background: linear-gradient(135deg, var(--accent-light), #a78bfa);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .header-actions { display: flex; gap: 8px; }
+    .icon-btn {
+      width: 36px; height: 36px;
+      background: var(--surface2); border: none; border-radius: 10px;
+      color: var(--text-sub); font-size: 18px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; position: relative;
+    }
+    .icon-btn:active { transform: scale(0.92); }
+    .badge {
+      position: absolute; top: -4px; right: -4px;
+      background: var(--danger); color: #fff;
+      font-size: 10px; font-weight: 700;
+      min-width: 18px; height: 18px;
+      border-radius: 9px; display: flex;
+      align-items: center; justify-content: center;
+      padding: 0 4px;
+    }
+    .badge:empty { display: none; }
+
+    /* ===== Navigation Tabs ===== */
+    .nav {
+      display: flex; gap: 6px; padding: 10px 20px 0;
+      overflow-x: auto; -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+    .nav::-webkit-scrollbar { display: none; }
+    .nav-item {
+      flex-shrink: 0;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 13px; font-weight: 600;
+      color: var(--text-sub);
+      background: transparent;
+      border: 1.5px solid transparent;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .nav-item.active {
+      color: var(--accent-light);
+      background: rgba(108,99,255,0.15);
+      border-color: rgba(108,99,255,0.3);
+    }
+
+    /* ===== View Tabs ===== */
+    .view-tabs {
+      display: flex; gap: 0; margin: 12px 20px 0;
+      background: var(--surface2); border-radius: 10px;
+      padding: 3px; overflow: hidden;
+    }
+    .view-tab {
+      flex: 1; padding: 8px 0; text-align: center;
+      font-size: 13px; font-weight: 600;
+      color: var(--text-sub); border-radius: 8px;
+      cursor: pointer; transition: all 0.2s;
+      border: none; background: transparent;
+    }
+    .view-tab.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    /* ===== Content ===== */
+    .content {
+      margin-top: 148px;
+      padding: 12px 16px 100px;
+    }
+
+    /* ===== Product Card ===== */
+    .card {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 8px;
+      display: flex; align-items: center;
+      justify-content: space-between;
+      border: 1.5px solid transparent;
+      transition: all 0.15s;
+    }
+    .card.changed {
+      border-color: var(--warning);
+      background: rgba(255,212,59,0.06);
+    }
+    .card.zero .product-stock {
+      color: var(--danger);
+    }
+    .card-left { flex: 1; min-width: 0; }
+    .product-name {
+      font-size: 15px; font-weight: 600;
+      white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .product-meta {
+      font-size: 12px; color: var(--text-sub);
+      margin-top: 3px; display: flex; gap: 10px;
+    }
+    .product-stock {
+      font-weight: 600;
+    }
+
+    /* ===== Quantity Control ===== */
+    .qty-ctrl {
+      display: flex; align-items: center; gap: 2px;
+    }
+    .qty-btn {
+      width: 44px; height: 44px;
+      border: none; border-radius: 12px;
+      font-size: 22px; font-weight: 700;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: transform 0.1s;
+    }
+    .qty-btn:active { transform: scale(0.88); }
+    .qty-btn.minus {
+      background: rgba(255,107,107,0.15); color: var(--danger);
+    }
+    .qty-btn.plus {
+      background: rgba(81,207,102,0.15); color: var(--success);
+    }
+    .qty-val {
+      width: 48px; text-align: center;
+      font-size: 24px; font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ===== Order Card ===== */
+    .order-card {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 8px;
+      border: 1.5px solid rgba(108,99,255,0.15);
+    }
+    .order-card-header {
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .order-card .product-name { font-size: 14px; }
+    .order-qty-ctrl {
+      display: flex; align-items: center; gap: 4px; margin-top: 10px;
+    }
+    .order-qty-btn {
+      width: 34px; height: 34px;
+      border: none; border-radius: 8px;
+      font-size: 18px; font-weight: 700;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .order-qty-btn.minus {
+      background: rgba(255,107,107,0.15); color: var(--danger);
+    }
+    .order-qty-btn.plus {
+      background: rgba(81,207,102,0.15); color: var(--success);
+    }
+    .order-qty-btn:active { transform: scale(0.88); }
+    .order-qty-val {
+      width: 40px; text-align: center;
+      font-size: 18px; font-weight: 700;
+    }
+    .order-remove {
+      background: none; border: none;
+      color: var(--text-sub); font-size: 20px;
+      cursor: pointer; padding: 4px;
+    }
+    .order-info {
+      display: flex; gap: 12px; margin-top: 6px;
+      font-size: 12px; color: var(--text-sub);
+    }
+
+    /* ===== Bottom Bar ===== */
+    .bottom-bar {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: var(--surface);
+      border-top: 1px solid rgba(108,99,255,0.2);
+      padding: 12px 20px calc(12px + env(safe-area-inset-bottom, 0px));
+      z-index: 100;
+    }
+    .action-btn {
+      width: 100%; padding: 14px;
+      border: none; border-radius: 12px;
+      font-size: 16px; font-weight: 700;
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+      transition: all 0.15s;
+    }
+    .action-btn:active { transform: scale(0.97); }
+    .action-btn:disabled {
+      background: var(--surface2);
+      color: var(--text-sub);
+    }
+    .action-btn.confirm {
+      background: linear-gradient(135deg, var(--success), #2f9e44);
+    }
+
+    /* ===== Empty State ===== */
+    .empty {
+      text-align: center; padding: 60px 20px;
+      color: var(--text-sub);
+    }
+    .empty-icon { font-size: 48px; margin-bottom: 12px; }
+    .empty-text { font-size: 15px; }
+
+    /* ===== Toast ===== */
+    .toast {
+      position: fixed; top: 50%; left: 50%;
+      transform: translate(-50%, -50%) scale(0.9);
+      background: rgba(0,0,0,0.9);
+      color: #fff; padding: 20px 40px;
+      border-radius: 16px;
+      font-size: 16px; font-weight: 600;
+      z-index: 300; opacity: 0;
+      transition: all 0.2s;
+      pointer-events: none;
+    }
+    .toast.show {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1);
+    }
+
+    /* ===== Modal ===== */
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 200; display: none;
+      align-items: flex-end;
+      justify-content: center;
+    }
+    .modal-overlay.show { display: flex; }
+    .modal {
+      background: var(--surface);
+      border-radius: 20px 20px 0 0;
+      width: 100%; max-width: 500px;
+      max-height: 85dvh;
+      padding: 20px;
+      overflow-y: auto;
+    }
+    .modal h2 {
+      font-size: 18px; margin-bottom: 16px;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .modal-close {
+      background: none; border: none;
+      color: var(--text-sub); font-size: 24px;
+      cursor: pointer;
+    }
+    .form-group { margin-bottom: 14px; }
+    .form-label {
+      font-size: 13px; color: var(--text-sub);
+      margin-bottom: 6px; display: block;
+    }
+    .form-input {
+      width: 100%; padding: 12px 14px;
+      background: var(--surface2); border: 1.5px solid rgba(108,99,255,0.2);
+      border-radius: 10px; color: var(--text);
+      font-size: 15px; outline: none;
+    }
+    .form-input:focus { border-color: var(--accent); }
+    .form-select {
+      width: 100%; padding: 12px 14px;
+      background: var(--surface2); border: 1.5px solid rgba(108,99,255,0.2);
+      border-radius: 10px; color: var(--text);
+      font-size: 15px; outline: none;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238888a0' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 14px center;
+    }
+
+    /* ===== Settings ===== */
+    .settings-section { margin-bottom: 20px; }
+    .settings-section h3 {
+      font-size: 14px; color: var(--text-sub);
+      margin-bottom: 10px; text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .settings-item {
+      background: var(--surface2);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 6px;
+      display: flex; justify-content: space-between;
+      align-items: center; cursor: pointer;
+    }
+    .settings-item:active { opacity: 0.7; }
+    .settings-item-label { font-size: 14px; }
+    .settings-item-value { font-size: 14px; color: var(--text-sub); }
+    .settings-danger { color: var(--danger); }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-top">
+    <h1>在庫管理</h1>
+    <div class="header-actions">
+      <button class="icon-btn" onclick="openModal('addProduct')" title="商品追加">+</button>
+      <button class="icon-btn" onclick="openModal('settings')" title="設定">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="nav" id="vendorTabs"></div>
+  <div class="view-tabs">
+    <button class="view-tab active" onclick="switchView('stock')">在庫</button>
+    <button class="view-tab" onclick="switchView('order')">
+      発注カゴ<span id="orderBadge"></span>
+    </button>
+    <button class="view-tab" onclick="switchView('history')">履歴</button>
+  </div>
+</div>
+
+<div class="content" id="content"></div>
+
+<div class="bottom-bar" id="bottomBar" style="display:none;">
+  <button class="action-btn" id="actionBtn" disabled></button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- 商品追加モーダル -->
+<div class="modal-overlay" id="modal-addProduct">
+  <div class="modal">
+    <h2>商品を追加 <button class="modal-close" onclick="closeModal('addProduct')">&times;</button></h2>
+    <div class="form-group">
+      <label class="form-label">仕入れ先</label>
+      <select class="form-select" id="addVendor"></select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">商品名</label>
+      <input class="form-input" id="addName" placeholder="例: クリアアッシュ">
+    </div>
+    <div class="form-group">
+      <label class="form-label">在庫数</label>
+      <input class="form-input" id="addStock" type="number" value="0" min="0">
+    </div>
+    <div class="form-group">
+      <label class="form-label">最低在庫数（この数を下回ると発注推奨）</label>
+      <input class="form-input" id="addMinStock" type="number" value="1" min="0">
+    </div>
+    <button class="action-btn" onclick="addProduct()" style="margin-top:8px">追加する</button>
+  </div>
+</div>
+
+<!-- 商品編集モーダル -->
+<div class="modal-overlay" id="modal-editProduct">
+  <div class="modal">
+    <h2>商品設定 <button class="modal-close" onclick="closeModal('editProduct')">&times;</button></h2>
+    <div id="editProductName" style="font-size:18px;font-weight:700;margin-bottom:16px;"></div>
+    <div class="form-group">
+      <label class="form-label">最低在庫数（この数を下回ると発注推奨）</label>
+      <input class="form-input" id="editMinStock" type="number" min="0">
+    </div>
+    <div class="form-group">
+      <label class="form-label">単価（円）</label>
+      <input class="form-input" id="editPrice" type="number" min="0">
+    </div>
+    <div class="form-group">
+      <label class="form-label">平均月間消費量</label>
+      <input class="form-input" id="editMonthly" type="number" min="0" step="0.1">
+    </div>
+    <div class="form-group">
+      <label class="form-label">季節調整係数（通常は1.0）</label>
+      <input class="form-input" id="editSeasonal" type="number" min="0" step="0.1" value="1">
+    </div>
+    <button class="action-btn" onclick="saveProductEdit()" style="margin-top:8px">保存</button>
+    <button onclick="deleteProduct()" style="width:100%;margin-top:12px;padding:12px;background:none;border:1.5px solid var(--danger);border-radius:12px;color:var(--danger);font-size:14px;font-weight:600;cursor:pointer;">この商品を削除</button>
+    <input type="hidden" id="editProductId">
+  </div>
+</div>
+
+<!-- 手動履歴追加モーダル -->
+<div class="modal-overlay" id="modal-addHistory">
+  <div class="modal">
+    <h2>履歴を追加 <button class="modal-close" onclick="closeModal('addHistory')">&times;</button></h2>
+    <div class="form-group">
+      <label class="form-label">仕入れ先</label>
+      <select class="form-select" id="histVendor" onchange="updateHistProducts()"></select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">商品（複数選択可）</label>
+      <div id="histProductList" style="max-height:300px;overflow-y:auto;"></div>
+    </div>
+    <button class="action-btn" onclick="saveManualHistory()" style="margin-top:8px">履歴に追加</button>
+  </div>
+</div>
+
+<!-- 設定モーダル -->
+<div class="modal-overlay" id="modal-settings">
+  <div class="modal">
+    <h2>設定 <button class="modal-close" onclick="closeModal('settings')">&times;</button></h2>
+    <div class="settings-section">
+      <h3>仕入れ先管理</h3>
+      <div id="vendorList"></div>
+      <div class="settings-item" onclick="addVendorPrompt()">
+        <span class="settings-item-label" style="color:var(--accent)">+ 仕入れ先を追加</span>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h3>データ</h3>
+      <div class="settings-item" onclick="exportData()">
+        <span class="settings-item-label">データをエクスポート</span>
+        <span class="settings-item-value">&gt;</span>
+      </div>
+      <div class="settings-item" onclick="importData()">
+        <span class="settings-item-label">データをインポート</span>
+        <span class="settings-item-value">&gt;</span>
+      </div>
+      <div class="settings-item" onclick="confirmClearData()">
+        <span class="settings-item-label settings-danger">全データを削除</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- インポート用隠しinput -->
+<input type="file" id="importFile" accept=".json" style="display:none" onchange="handleImport(event)">
+
+<script>
+// ============================
+// Data Layer
+// ============================
+const STORAGE_KEY = 'inventory_app';
+
+function loadData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch(e) {}
+  return null;
+}
+
+function saveData(data) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+function getDefaultData() {
+  return {
+    vendors: [
+      { id: 'v1', name: '東京理美容商会', shortName: '東京理美', sortOrder: 0 },
+      { id: 'v2', name: 'オージュア', shortName: 'オージュア', sortOrder: 1 },
+      { id: 'v3', name: 'フジシン', shortName: 'フジシン', sortOrder: 2 },
+      { id: 'v4', name: 'ミツイ', shortName: 'ミツイ', sortOrder: 3 },
+    ],
+    products: [],
+    orderHistory: [],
+    stocktakingHistory: [],
+  };
+}
+
+let DATA = loadData() || getDefaultData();
+let currentVendorId = DATA.vendors[0]?.id || '';
+let currentView = 'stock'; // stock | order | history
+let orderCart = []; // { productId, quantity }
+let pendingChanges = {}; // productId -> newStock (before save)
+
+// ============================
+// Initial Data Import
+// ============================
+
+function showWelcome() {
+  document.getElementById('content').style.marginTop = '20px';
+  document.querySelector('.header').style.display = 'none';
+  document.getElementById('content').innerHTML = `
+    <div style="text-align:center;padding:60px 20px;">
+      <div style="font-size:48px;margin-bottom:16px;">📦</div>
+      <h2 style="font-size:22px;margin-bottom:8px;background:linear-gradient(135deg,var(--accent-light),#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">在庫管理アプリ</h2>
+      <p style="color:var(--text-sub);margin-bottom:32px;font-size:14px;">スプレッドシートのデータを読み込んで始めましょう</p>
+      <label style="display:inline-block;padding:14px 32px;background:var(--accent);color:#fff;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;">
+        データファイルを選択
+        <input type="file" accept=".json" style="display:none" onchange="handleInitialImport(event)">
+      </label>
+      <p style="color:var(--text-sub);margin-top:16px;font-size:12px;">inventory_data.json を選んでください</p>
+      <div style="margin-top:40px;border-top:1px solid var(--surface2);padding-top:20px;">
+        <button onclick="skipImport()" style="background:none;border:none;color:var(--text-sub);font-size:14px;cursor:pointer;text-decoration:underline;">
+          空の状態で始める
+        </button>
+      </div>
+    </div>`;
+}
+
+function handleInitialImport(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    try {
+      const imported = JSON.parse(ev.target.result);
+      if (!imported.vendors || !imported.products) {
+        showToast('無効なデータです');
+        return;
+      }
+      DATA = imported;
+      saveData(DATA);
+      currentVendorId = DATA.vendors[0]?.id || '';
+      document.querySelector('.header').style.display = '';
+      document.getElementById('content').style.marginTop = '';
+      showToast(`${DATA.products.length}商品・${DATA.orderHistory.length}件の履歴を読み込みました`);
+      render();
+    } catch(err) {
+      showToast('ファイルの読み込みに失敗しました');
+    }
+  };
+  reader.readAsText(file);
+}
+
+function skipImport() {
+  document.querySelector('.header').style.display = '';
+  document.getElementById('content').style.marginTop = '';
+  render();
+}
+
+// ============================
+// Render Engine
+// ============================
+
+function render() {
+  renderVendorTabs();
+  renderContent();
+  renderBottomBar();
+  updateOrderBadge();
+}
+
+function renderVendorTabs() {
+  const el = document.getElementById('vendorTabs');
+  el.innerHTML = DATA.vendors
+    .sort((a,b) => a.sortOrder - b.sortOrder)
+    .map(v =>
+      `<div class="nav-item${v.id === currentVendorId ? ' active' : ''}"
+            onclick="switchVendor('${v.id}')">${esc(v.shortName || v.name)}</div>`
+    ).join('');
+}
+
+function renderContent() {
+  const el = document.getElementById('content');
+  if (currentView === 'stock') {
+    renderStockView(el);
+  } else if (currentView === 'order') {
+    renderOrderView(el);
+  } else {
+    renderHistoryView(el);
+  }
+}
+
+function renderStockView(el) {
+  const products = DATA.products
+    .filter(p => p.vendorId === currentVendorId && p.active !== false)
+    .sort((a,b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+
+  if (products.length === 0) {
+    el.innerHTML = `
+      <div class="empty">
+        <div class="empty-icon">📦</div>
+        <div class="empty-text">商品がありません<br>右上の「+」から追加してください</div>
+      </div>`;
+    return;
+  }
+
+  el.innerHTML = products.map(p => {
+    const stock = pendingChanges[p.id] !== undefined ? pendingChanges[p.id] : p.stock;
+    const changed = pendingChanges[p.id] !== undefined && pendingChanges[p.id] !== p.stock;
+    const isZero = stock === 0;
+    const daily = (p.monthlyConsumption || 0) * (p.seasonalFactor || 1) / 30;
+    const avgInfo = daily > 0 ? `月${(p.monthlyConsumption || 0).toFixed(1)}個` : '';
+    return `
+      <div class="card${changed ? ' changed' : ''}${isZero ? ' zero' : ''}" id="card-${p.id}">
+        <div class="card-left" onclick="openProductEdit('${p.id}')" style="cursor:pointer;">
+          <div class="product-name">${esc(p.name)}</div>
+          <div class="product-meta">
+            <span class="product-stock">在庫: ${stock}</span>
+            <span>最低: ${p.minStock || 0}</span>
+            ${avgInfo ? `<span>${avgInfo}</span>` : ''}
+          </div>
+        </div>
+        <div class="qty-ctrl">
+          <button class="qty-btn minus" onclick="changeStock('${p.id}',-1)">−</button>
+          <div class="qty-val" id="qty-${p.id}">${stock}</div>
+          <button class="qty-btn plus" onclick="changeStock('${p.id}',1)">+</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function renderOrderView(el) {
+  if (orderCart.length === 0) {
+    // Auto-generate recommendations
+    generateOrderRecommendations();
+    if (orderCart.length === 0) {
+      el.innerHTML = `
+        <div class="empty">
+          <div class="empty-icon">🛒</div>
+          <div class="empty-text">発注が必要な商品はありません</div>
+        </div>`;
+      return;
+    }
+  }
+
+  const vendorGroups = {};
+  orderCart.forEach(item => {
+    const p = DATA.products.find(x => x.id === item.productId);
+    if (!p) return;
+    const v = DATA.vendors.find(x => x.id === p.vendorId);
+    const vName = v ? v.name : '不明';
+    if (!vendorGroups[vName]) vendorGroups[vName] = [];
+    vendorGroups[vName].push({ ...item, product: p });
+  });
+
+  let html = '';
+  let grandTotal = 0;
+  for (const [vendor, items] of Object.entries(vendorGroups)) {
+    const vendorTotal = items.reduce((s, it) => s + (it.product.price || 0) * it.quantity, 0);
+    grandTotal += vendorTotal;
+    html += `<div style="font-size:13px;color:var(--text-sub);font-weight:600;margin:16px 0 8px;display:flex;justify-content:space-between;">${esc(vendor)}<span>${vendorTotal.toLocaleString()}円</span></div>`;
+    items.forEach(item => {
+      const idx = orderCart.findIndex(c => c.productId === item.productId);
+      const subtotal = (item.product.price || 0) * item.quantity;
+      html += `
+        <div class="order-card">
+          <div class="order-card-header">
+            <div class="product-name">${esc(item.product.name)}</div>
+            <button class="order-remove" onclick="removeFromCart(${idx})">&times;</button>
+          </div>
+          <div class="order-info">
+            <span>¥${(item.product.price || 0).toLocaleString()}</span>
+            <span>現在庫: ${item.product.stock}</span>
+            <span>最低: ${item.product.minStock || 0}</span>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;">
+            <div class="order-qty-ctrl">
+              <button class="order-qty-btn minus" onclick="changeCartQty(${idx},-1)">−</button>
+              <div class="order-qty-val">${item.quantity}</div>
+              <button class="order-qty-btn plus" onclick="changeCartQty(${idx},1)">+</button>
+            </div>
+            <div style="font-size:15px;font-weight:700;color:var(--accent-light);">¥${subtotal.toLocaleString()}</div>
+          </div>
+        </div>`;
+    });
+  }
+  // Total summary
+  html += `<div style="background:var(--surface);border-radius:var(--radius);padding:16px;margin-top:16px;text-align:center;">
+    <div style="font-size:13px;color:var(--text-sub);">合計金額</div>
+    <div style="font-size:28px;font-weight:700;color:var(--warning);margin-top:4px;">¥${grandTotal.toLocaleString()}</div>
+  </div>`;
+  el.innerHTML = html;
+}
+
+let historyMonth = null; // null = current month
+
+function renderHistoryView(el) {
+  if (DATA.orderHistory.length === 0) {
+    el.innerHTML = `
+      <div class="empty">
+        <div class="empty-icon">📋</div>
+        <div class="empty-text">発注履歴はまだありません</div>
+      </div>`;
+    return;
+  }
+
+  // Get all unique months
+  const allMonths = [...new Set(DATA.orderHistory.map(h => {
+    const d = new Date(h.date);
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+  }))].sort().reverse();
+
+  if (!historyMonth) historyMonth = allMonths[0];
+
+  // Month navigation
+  const currentIdx = allMonths.indexOf(historyMonth);
+  const [y, m] = historyMonth.split('-');
+  let html = `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0 12px;">
+      <button onclick="changeHistoryMonth(1)" style="background:var(--surface2);border:none;color:var(--text);width:40px;height:40px;border-radius:10px;font-size:20px;cursor:pointer;${currentIdx >= allMonths.length-1 ? 'opacity:0.3;pointer-events:none;' : ''}">&lt;</button>
+      <div style="font-size:17px;font-weight:700;">${y}年${parseInt(m)}月</div>
+      <button onclick="changeHistoryMonth(-1)" style="background:var(--surface2);border:none;color:var(--text);width:40px;height:40px;border-radius:10px;font-size:20px;cursor:pointer;${currentIdx <= 0 ? 'opacity:0.3;pointer-events:none;' : ''}">&gt;</button>
+    </div>
+    <button onclick="openModal('addHistory');initHistoryModal()" style="width:100%;padding:10px;margin-bottom:12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--accent-light);font-size:14px;font-weight:600;cursor:pointer;">+ 手動で履歴を追加</button>`;
+
+  // Filter by selected month
+  const history = DATA.orderHistory
+    .filter(h => {
+      const d = new Date(h.date);
+      return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') === historyMonth;
+    })
+    .sort((a,b) => new Date(b.date) - new Date(a.date));
+
+  // Summary
+  const totalItems = history.reduce((s, h) => s + (h.quantity || 1), 0);
+  html += `<div style="background:var(--surface);border-radius:var(--radius);padding:12px 16px;margin-bottom:12px;display:flex;justify-content:space-around;text-align:center;">
+    <div><div style="font-size:24px;font-weight:700;color:var(--accent-light);">${history.length}</div><div style="font-size:11px;color:var(--text-sub);">件</div></div>
+    <div><div style="font-size:24px;font-weight:700;color:var(--accent-light);">${totalItems}</div><div style="font-size:11px;color:var(--text-sub);">個</div></div>
+  </div>`;
+
+  // Group by date
+  const groups = {};
+  history.forEach(h => {
+    const dateStr = new Date(h.date).toLocaleDateString('ja-JP');
+    if (!groups[dateStr]) groups[dateStr] = [];
+    const p = DATA.products.find(x => x.id === h.productId);
+    const v = DATA.vendors.find(x => x.id === h.vendorId);
+    groups[dateStr].push({ ...h, productName: h.productName || p?.name || '削除済み', vendorName: h.vendorName || v?.name || '' });
+  });
+
+  for (const [date, items] of Object.entries(groups)) {
+    html += `<div style="font-size:13px;color:var(--text-sub);font-weight:600;margin:16px 0 8px;display:flex;justify-content:space-between;align-items:center;">
+      ${date}（${items.length}件）
+      <button onclick="deleteHistoryByDate('${date}')" style="background:rgba(255,107,107,0.15);border:none;color:var(--danger);font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;cursor:pointer;">まとめて削除</button>
+    </div>`;
+    items.forEach(item => {
+      html += `
+        <div class="card" style="position:relative;">
+          <div class="card-left">
+            <div class="product-name">${esc(item.productName)}</div>
+            <div class="product-meta">
+              <span>${esc(item.vendorName)}</span>
+              <span>発注時在庫: ${item.stockAtOrder}</span>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="font-size:20px;font-weight:700;color:var(--accent-light);">×${item.quantity}</div>
+            <button onclick="deleteHistory('${item.id}')" style="background:none;border:none;color:var(--text-sub);font-size:18px;cursor:pointer;padding:4px;">&times;</button>
+          </div>
+        </div>`;
+    });
+  }
+  el.innerHTML = html;
+}
+
+let lastDeleted = null;
+
+function deleteHistoryByDate(dateStr) {
+  const items = DATA.orderHistory.filter(h => new Date(h.date).toLocaleDateString('ja-JP') === dateStr);
+  if (!confirm(`${dateStr}の${items.length}件をまとめて削除しますか？`)) return;
+  lastDeleted = items.map(h => ({ ...h }));
+  DATA.orderHistory = DATA.orderHistory.filter(h => new Date(h.date).toLocaleDateString('ja-JP') !== dateStr);
+  saveData(DATA);
+  renderContent();
+  showUndoToast();
+}
+
+function deleteHistory(id) {
+  if (!confirm('この履歴を削除しますか？')) return;
+  const item = DATA.orderHistory.find(h => h.id === id);
+  if (!item) return;
+  lastDeleted = { ...item };
+  DATA.orderHistory = DATA.orderHistory.filter(h => h.id !== id);
+  saveData(DATA);
+  renderContent();
+  showUndoToast();
+}
+
+function showUndoToast() {
+  const t = document.getElementById('toast');
+  t.innerHTML = '削除しました <button onclick="undoDelete()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 14px;margin-left:12px;font-size:14px;font-weight:600;cursor:pointer;">元に戻す</button>';
+  t.classList.add('show');
+  clearTimeout(window._undoTimer);
+  window._undoTimer = setTimeout(() => {
+    t.classList.remove('show');
+    lastDeleted = null;
+  }, 5000);
+}
+
+function undoDelete() {
+  if (!lastDeleted) return;
+  if (Array.isArray(lastDeleted)) {
+    DATA.orderHistory.push(...lastDeleted);
+  } else {
+    DATA.orderHistory.push(lastDeleted);
+  }
+  saveData(DATA);
+  lastDeleted = null;
+  document.getElementById('toast').classList.remove('show');
+  showToast('元に戻しました');
+  renderContent();
+}
+
+function changeHistoryMonth(dir) {
+  const allMonths = [...new Set(DATA.orderHistory.map(h => {
+    const d = new Date(h.date);
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+  }))].sort().reverse();
+  const idx = allMonths.indexOf(historyMonth);
+  const newIdx = idx + dir;
+  if (newIdx >= 0 && newIdx < allMonths.length) {
+    historyMonth = allMonths[newIdx];
+    renderContent();
+  }
+}
+
+function renderBottomBar() {
+  const bar = document.getElementById('bottomBar');
+  const btn = document.getElementById('actionBtn');
+
+  if (currentView === 'stock') {
+    const count = Object.keys(pendingChanges).filter(id => {
+      const p = DATA.products.find(x => x.id === id);
+      return p && pendingChanges[id] !== p.stock;
+    }).length;
+    if (count > 0) {
+      bar.style.display = 'block';
+      btn.disabled = false;
+      btn.className = 'action-btn';
+      btn.textContent = `保存する（${count}件）`;
+      btn.onclick = saveStockChanges;
+    } else {
+      bar.style.display = 'none';
+    }
+  } else if (currentView === 'order') {
+    if (orderCart.length > 0) {
+      bar.style.display = 'block';
+      btn.disabled = false;
+      btn.className = 'action-btn confirm';
+      btn.textContent = `発注を確定する（${orderCart.length}件）`;
+      btn.onclick = confirmOrder;
+    } else {
+      bar.style.display = 'none';
+    }
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
+function updateOrderBadge() {
+  const badge = document.getElementById('orderBadge');
+  if (orderCart.length > 0) {
+    badge.textContent = ` (${orderCart.length})`;
+  } else {
+    badge.textContent = '';
+  }
+}
+
+// ============================
+// Actions
+// ============================
+
+function switchVendor(id) {
+  currentVendorId = id;
+  render();
+}
+
+function switchView(view) {
+  currentView = view;
+  document.querySelectorAll('.view-tab').forEach((t, i) => {
+    t.classList.toggle('active',
+      (i === 0 && view === 'stock') ||
+      (i === 1 && view === 'order') ||
+      (i === 2 && view === 'history')
+    );
+  });
+  render();
+}
+
+function changeStock(productId, delta) {
+  const p = DATA.products.find(x => x.id === productId);
+  if (!p) return;
+  const current = pendingChanges[productId] !== undefined ? pendingChanges[productId] : p.stock;
+  const newVal = Math.max(0, current + delta);
+  if (newVal === p.stock) {
+    delete pendingChanges[productId];
+  } else {
+    pendingChanges[productId] = newVal;
+  }
+
+  // Update UI without full re-render for speed
+  const qtyEl = document.getElementById('qty-' + productId);
+  const cardEl = document.getElementById('card-' + productId);
+  if (qtyEl) qtyEl.textContent = newVal;
+  if (cardEl) {
+    cardEl.classList.toggle('changed', pendingChanges[productId] !== undefined);
+    cardEl.classList.toggle('zero', newVal === 0);
+  }
+  renderBottomBar();
+}
+
+function saveStockChanges() {
+  const now = new Date().toISOString();
+  for (const [productId, newStock] of Object.entries(pendingChanges)) {
+    const p = DATA.products.find(x => x.id === productId);
+    if (!p || newStock === p.stock) continue;
+
+    // Record stocktaking history
+    DATA.stocktakingHistory.push({
+      id: uid(),
+      productId: productId,
+      date: now,
+      quantity: newStock,
+      previousQuantity: p.stock,
+    });
+
+    p.stock = newStock;
+  }
+  pendingChanges = {};
+  saveData(DATA);
+  showToast('保存しました');
+  render();
+}
+
+function generateOrderRecommendations() {
+  orderCart = [];
+  DATA.products.forEach(p => {
+    if (p.active === false) return;
+    const minStock = p.minStock || 0;
+    const monthly = p.monthlyConsumption || 0;
+    const seasonal = p.seasonalFactor || 1;
+    const daily = monthly * seasonal / 30;
+
+    // 目標在庫 = MAX(最低在庫数, 日次消費量 × 21日分)
+    const targetStock = Math.max(minStock, Math.ceil(daily * 21));
+    const recommended = targetStock - p.stock;
+
+    if (recommended > 0) {
+      orderCart.push({
+        productId: p.id,
+        quantity: recommended,
+      });
+    }
+  });
+}
+
+// 商品編集
+function openProductEdit(id) {
+  const p = DATA.products.find(x => x.id === id);
+  if (!p) return;
+  document.getElementById('editProductId').value = id;
+  document.getElementById('editProductName').textContent = p.name;
+  document.getElementById('editMinStock').value = p.minStock || 0;
+  document.getElementById('editPrice').value = p.price || 0;
+  document.getElementById('editMonthly').value = p.monthlyConsumption || 0;
+  document.getElementById('editSeasonal').value = p.seasonalFactor || 1;
+  openModal('editProduct');
+}
+
+function saveProductEdit() {
+  const id = document.getElementById('editProductId').value;
+  const p = DATA.products.find(x => x.id === id);
+  if (!p) return;
+  p.minStock = parseInt(document.getElementById('editMinStock').value) || 0;
+  p.price = parseInt(document.getElementById('editPrice').value) || 0;
+  p.monthlyConsumption = parseFloat(document.getElementById('editMonthly').value) || 0;
+  p.seasonalFactor = parseFloat(document.getElementById('editSeasonal').value) || 1;
+  saveData(DATA);
+  closeModal('editProduct');
+  showToast('保存しました');
+  render();
+}
+
+function deleteProduct() {
+  const id = document.getElementById('editProductId').value;
+  const p = DATA.products.find(x => x.id === id);
+  if (!p) return;
+  if (!confirm(`「${p.name}」を削除しますか？`)) return;
+  p.active = false;
+  saveData(DATA);
+  closeModal('editProduct');
+  showToast('削除しました');
+  render();
+}
+
+// 手動履歴追加
+let manualHistoryItems = {}; // productId -> quantity
+
+function initHistoryModal() {
+  const sel = document.getElementById('histVendor');
+  sel.innerHTML = DATA.vendors.map(v =>
+    `<option value="${v.id}"${v.id === currentVendorId ? ' selected' : ''}>${esc(v.name)}</option>`
+  ).join('');
+  manualHistoryItems = {};
+  updateHistProducts();
+}
+
+function updateHistProducts() {
+  const vendorId = document.getElementById('histVendor').value;
+  const products = DATA.products
+    .filter(p => p.vendorId === vendorId && p.active !== false)
+    .sort((a,b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+
+  const el = document.getElementById('histProductList');
+  el.innerHTML = products.map(p => {
+    const qty = manualHistoryItems[p.id] || 0;
+    return `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--surface2);">
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(p.name)}</div>
+          <div style="font-size:11px;color:var(--text-sub);">在庫: ${p.stock}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:4px;">
+          <button onclick="changeManualQty('${p.id}',-1)" style="width:32px;height:32px;border:none;border-radius:8px;background:rgba(255,107,107,0.15);color:var(--danger);font-size:16px;font-weight:700;cursor:pointer;">−</button>
+          <div style="width:32px;text-align:center;font-size:16px;font-weight:700;" id="mq-${p.id}">${qty}</div>
+          <button onclick="changeManualQty('${p.id}',1)" style="width:32px;height:32px;border:none;border-radius:8px;background:rgba(81,207,102,0.15);color:var(--success);font-size:16px;font-weight:700;cursor:pointer;">+</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function changeManualQty(productId, delta) {
+  const current = manualHistoryItems[productId] || 0;
+  const newVal = Math.max(0, current + delta);
+  if (newVal === 0) {
+    delete manualHistoryItems[productId];
+  } else {
+    manualHistoryItems[productId] = newVal;
+  }
+  const el = document.getElementById('mq-' + productId);
+  if (el) el.textContent = newVal;
+}
+
+function saveManualHistory() {
+  const entries = Object.entries(manualHistoryItems).filter(([,q]) => q > 0);
+  if (entries.length === 0) {
+    showToast('数量を入力してください');
+    return;
+  }
+
+  const now = new Date().toISOString();
+  entries.forEach(([productId, quantity]) => {
+    const p = DATA.products.find(x => x.id === productId);
+    if (!p) return;
+    DATA.orderHistory.push({
+      id: uid(),
+      productId,
+      vendorId: p.vendorId,
+      productName: p.name,
+      vendorName: DATA.vendors.find(v => v.id === p.vendorId)?.name || '',
+      date: now,
+      quantity,
+      stockAtOrder: p.stock,
+    });
+  });
+
+  saveData(DATA);
+  manualHistoryItems = {};
+  closeModal('addHistory');
+  showToast(`${entries.length}件の履歴を追加しました`);
+  render();
+}
+
+function changeCartQty(index, delta) {
+  if (!orderCart[index]) return;
+  orderCart[index].quantity = Math.max(1, orderCart[index].quantity + delta);
+  render();
+}
+
+function removeFromCart(index) {
+  orderCart.splice(index, 1);
+  render();
+}
+
+function confirmOrder() {
+  if (orderCart.length === 0) return;
+  if (!confirm(`${orderCart.length}件の発注を確定しますか？`)) return;
+
+  const now = new Date().toISOString();
+  // Build checklist data before clearing cart
+  const checklistItems = [];
+  orderCart.forEach(item => {
+    const p = DATA.products.find(x => x.id === item.productId);
+    if (!p) return;
+    DATA.orderHistory.push({
+      id: uid(),
+      productId: item.productId,
+      vendorId: p.vendorId,
+      productName: p.name,
+      vendorName: DATA.vendors.find(v => v.id === p.vendorId)?.name || '',
+      date: now,
+      quantity: item.quantity,
+      stockAtOrder: p.stock,
+    });
+    checklistItems.push({
+      name: p.name,
+      quantity: item.quantity,
+      stock: p.stock,
+      price: p.price || 0,
+      vendorId: p.vendorId,
+    });
+  });
+
+  orderCart = [];
+  saveData(DATA);
+  showChecklist(checklistItems);
+}
+
+function showChecklist(items) {
+  // Group by vendor
+  const groups = {};
+  items.forEach(item => {
+    const v = DATA.vendors.find(x => x.id === item.vendorId);
+    const vName = v ? v.name : '不明';
+    if (!groups[vName]) groups[vName] = [];
+    groups[vName].push(item);
+  });
+
+  const el = document.getElementById('content');
+  let html = `<div style="font-size:18px;font-weight:700;margin-bottom:12px;text-align:center;">発注チェックリスト</div>`;
+
+  // Share buttons
+  html += `<div style="display:flex;gap:8px;margin-bottom:16px;">
+    <button onclick="shareOrder()" style="flex:1;padding:12px;background:var(--accent);border:none;border-radius:10px;color:#fff;font-size:14px;font-weight:600;cursor:pointer;">
+      共有・送信
+    </button>
+    <button onclick="copyOrderText()" style="flex:1;padding:12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--text);font-size:14px;font-weight:600;cursor:pointer;">
+      コピー
+    </button>
+  </div>`;
+
+  // Store checklist data for sharing
+  window._checklistGroups = groups;
+
+  for (const [vendor, vendorItems] of Object.entries(groups)) {
+    const vendorTotal = vendorItems.reduce((s, it) => s + it.price * it.quantity, 0);
+    html += `<div style="font-size:13px;color:var(--text-sub);font-weight:600;margin:14px 0 8px;display:flex;justify-content:space-between;">${esc(vendor)}<span>¥${vendorTotal.toLocaleString()}</span></div>`;
+
+    vendorItems.forEach((item, i) => {
+      const key = vendor + '-' + i;
+      html += `
+        <div class="card" id="chk-${key}" onclick="toggleCheck('${key}')" style="cursor:pointer;">
+          <div style="width:28px;height:28px;border-radius:8px;border:2px solid var(--text-sub);display:flex;align-items:center;justify-content:center;margin-right:12px;flex-shrink:0;" id="chkbox-${key}"></div>
+          <div class="card-left" style="min-width:0;">
+            <div class="product-name">${esc(item.name)}</div>
+            <div class="product-meta">
+              <span>¥${item.price.toLocaleString()}</span>
+              <span>在庫: ${item.stock}</span>
+            </div>
+          </div>
+          <div style="font-size:20px;font-weight:700;color:var(--accent-light);flex-shrink:0;">×${item.quantity}</div>
+        </div>`;
+    });
+  }
+
+  html += `<button onclick="switchView('stock')" style="width:100%;margin-top:20px;padding:14px;background:var(--surface2);border:none;border-radius:12px;color:var(--text);font-size:15px;font-weight:600;cursor:pointer;">在庫画面に戻る</button>`;
+
+  el.innerHTML = html;
+  document.getElementById('bottomBar').style.display = 'none';
+}
+
+function toggleCheck(key) {
+  const box = document.getElementById('chkbox-' + key);
+  const card = document.getElementById('chk-' + key);
+  if (box.innerHTML) {
+    box.innerHTML = '';
+    card.style.opacity = '1';
+    card.style.textDecoration = 'none';
+  } else {
+    box.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M3 8l3 3 7-7" stroke="#51cf66" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>';
+    card.style.opacity = '0.5';
+  }
+}
+
+function buildOrderText() {
+  const groups = window._checklistGroups;
+  let text = '【発注リスト】' + new Date().toLocaleDateString('ja-JP') + '\n\n';
+  for (const [vendor, items] of Object.entries(groups)) {
+    const vendorTotal = items.reduce((s, it) => s + it.price * it.quantity, 0);
+    text += `■ ${vendor}（¥${vendorTotal.toLocaleString()}）\n`;
+    items.forEach(item => {
+      text += `  ${item.name} ×${item.quantity}（在庫:${item.stock}）¥${(item.price * item.quantity).toLocaleString()}\n`;
+    });
+    text += '\n';
+  }
+  const grandTotal = Object.values(groups).flat().reduce((s, it) => s + it.price * it.quantity, 0);
+  text += `合計: ¥${grandTotal.toLocaleString()}`;
+  return text;
+}
+
+function shareOrder() {
+  const text = buildOrderText();
+  if (navigator.share) {
+    navigator.share({
+      title: '発注リスト ' + new Date().toLocaleDateString('ja-JP'),
+      text: text,
+    }).catch(() => {});
+  } else {
+    // PCなどshare非対応の場合はコピーにフォールバック
+    copyOrderText();
+  }
+}
+
+function copyOrderText() {
+  const text = buildOrderText();
+  navigator.clipboard.writeText(text).then(() => {
+    showToast('コピーしました');
+  }).catch(() => {
+    // Fallback
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('コピーしました');
+  });
+}
+
+// ============================
+// Product Management
+// ============================
+
+function addProduct() {
+  const vendorId = document.getElementById('addVendor').value;
+  const name = document.getElementById('addName').value.trim();
+  const stock = parseInt(document.getElementById('addStock').value) || 0;
+  const minStock = parseInt(document.getElementById('addMinStock').value) || 0;
+
+  if (!name) { showToast('商品名を入力してください'); return; }
+
+  // Duplicate check
+  const exists = DATA.products.find(p =>
+    p.vendorId === vendorId && p.name === name && p.active !== false
+  );
+  if (exists) { showToast('同じ商品名が既にあります'); return; }
+
+  const maxSort = Math.max(0, ...DATA.products.filter(p => p.vendorId === vendorId).map(p => p.sortOrder || 0));
+
+  DATA.products.push({
+    id: uid(),
+    vendorId: vendorId,
+    name: name,
+    stock: stock,
+    minStock: minStock,
+    sortOrder: maxSort + 10,
+    active: true,
+  });
+
+  saveData(DATA);
+  closeModal('addProduct');
+  document.getElementById('addName').value = '';
+  document.getElementById('addStock').value = '0';
+  document.getElementById('addMinStock').value = '1';
+  currentVendorId = vendorId;
+  showToast('追加しました');
+  render();
+}
+
+// ============================
+// Vendor Management
+// ============================
+
+function addVendorPrompt() {
+  const name = prompt('仕入れ先の名前を入力:');
+  if (!name || !name.trim()) return;
+  const trimmed = name.trim();
+  if (DATA.vendors.find(v => v.name === trimmed)) {
+    showToast('同じ名前の仕入れ先があります');
+    return;
+  }
+  const maxSort = Math.max(0, ...DATA.vendors.map(v => v.sortOrder));
+  DATA.vendors.push({
+    id: uid(),
+    name: trimmed,
+    shortName: trimmed.length > 5 ? trimmed.substring(0, 5) : trimmed,
+    sortOrder: maxSort + 1,
+  });
+  saveData(DATA);
+  showToast('追加しました');
+  renderSettingsVendors();
+  render();
+}
+
+function deleteVendor(id) {
+  const v = DATA.vendors.find(x => x.id === id);
+  if (!v) return;
+  const productCount = DATA.products.filter(p => p.vendorId === id && p.active !== false).length;
+  const msg = productCount > 0
+    ? `「${v.name}」を削除すると、${productCount}件の商品も削除されます。よろしいですか？`
+    : `「${v.name}」を削除しますか？`;
+  if (!confirm(msg)) return;
+
+  DATA.vendors = DATA.vendors.filter(x => x.id !== id);
+  DATA.products.forEach(p => { if (p.vendorId === id) p.active = false; });
+  if (currentVendorId === id) {
+    currentVendorId = DATA.vendors[0]?.id || '';
+  }
+  saveData(DATA);
+  showToast('削除しました');
+  renderSettingsVendors();
+  render();
+}
+
+function renderSettingsVendors() {
+  const el = document.getElementById('vendorList');
+  el.innerHTML = DATA.vendors
+    .sort((a,b) => a.sortOrder - b.sortOrder)
+    .map(v => `
+      <div class="settings-item">
+        <span class="settings-item-label">${esc(v.name)}</span>
+        <button class="order-remove" onclick="event.stopPropagation();deleteVendor('${v.id}')">&times;</button>
+      </div>
+    `).join('');
+}
+
+// ============================
+// Data Export/Import
+// ============================
+
+function exportData() {
+  const json = JSON.stringify(DATA, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `inventory_backup_${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('エクスポートしました');
+}
+
+function importData() {
+  document.getElementById('importFile').click();
+}
+
+function handleImport(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    try {
+      const imported = JSON.parse(ev.target.result);
+      if (!imported.vendors || !imported.products) {
+        showToast('無効なデータです');
+        return;
+      }
+      if (!confirm('現在のデータを上書きしますか？')) return;
+      DATA = imported;
+      saveData(DATA);
+      currentVendorId = DATA.vendors[0]?.id || '';
+      showToast('インポートしました');
+      render();
+      closeModal('settings');
+    } catch(err) {
+      showToast('ファイルの読み込みに失敗しました');
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+}
+
+function confirmClearData() {
+  if (!confirm('全データを削除しますか？この操作は元に戻せません。')) return;
+  if (!confirm('本当に削除しますか？')) return;
+  DATA = getDefaultData();
+  saveData(DATA);
+  currentVendorId = DATA.vendors[0]?.id || '';
+  orderCart = [];
+  pendingChanges = {};
+  showToast('全データを削除しました');
+  closeModal('settings');
+  render();
+}
+
+// ============================
+// Modal
+// ============================
+
+function openModal(name) {
+  document.getElementById('modal-' + name).classList.add('show');
+  if (name === 'addProduct') {
+    const sel = document.getElementById('addVendor');
+    sel.innerHTML = DATA.vendors.map(v =>
+      `<option value="${v.id}"${v.id === currentVendorId ? ' selected' : ''}>${esc(v.name)}</option>`
+    ).join('');
+  }
+  if (name === 'settings') {
+    renderSettingsVendors();
+  }
+}
+
+function closeModal(name) {
+  document.getElementById('modal-' + name).classList.remove('show');
+}
+
+// Close modal on overlay click
+document.querySelectorAll('.modal-overlay').forEach(overlay => {
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay) overlay.classList.remove('show');
+  });
+});
+
+// ============================
+// Utilities
+// ============================
+
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function esc(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+// ============================
+// Init
+// ============================
+if (DATA.products.length === 0) {
+  showWelcome();
+} else {
+  render();
+}
+</script>
+</body>
+</html>
