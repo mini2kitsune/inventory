@@ -738,9 +738,11 @@ function renderHistoryView(el) {
 
   // Summary
   const totalItems = history.reduce((s, h) => s + (h.quantity || 1), 0);
+  const monthTotal = history.reduce((s, h) => s + (h.price || 0) * (h.quantity || 1), 0);
   html += `<div style="background:var(--surface);border-radius:var(--radius);padding:12px 16px;margin-bottom:12px;display:flex;justify-content:space-around;text-align:center;">
     <div><div style="font-size:24px;font-weight:700;color:var(--accent-light);">${history.length}</div><div style="font-size:11px;color:var(--text-sub);">件</div></div>
     <div><div style="font-size:24px;font-weight:700;color:var(--accent-light);">${totalItems}</div><div style="font-size:11px;color:var(--text-sub);">個</div></div>
+    <div><div style="font-size:24px;font-weight:700;color:var(--accent-light);">¥${monthTotal.toLocaleString()}</div><div style="font-size:11px;color:var(--text-sub);">月合計（税抜）</div></div>
   </div>`;
 
   // Group by date
@@ -754,11 +756,22 @@ function renderHistoryView(el) {
   });
 
   for (const [date, items] of Object.entries(groups)) {
-    html += `<div style="font-size:13px;color:var(--text-sub);font-weight:600;margin:16px 0 8px;display:flex;justify-content:space-between;align-items:center;">
+    // Vendor totals per date
+    const vendorTotals = {};
+    items.forEach(item => {
+      const vn = item.vendorName || '不明';
+      if (!vendorTotals[vn]) vendorTotals[vn] = 0;
+      vendorTotals[vn] += (item.price || 0) * (item.quantity || 1);
+    });
+    const vendorSummary = Object.entries(vendorTotals).map(([v, t]) => `${v}: ¥${t.toLocaleString()}`).join('　');
+
+    html += `<div style="font-size:13px;color:var(--text-sub);font-weight:600;margin:16px 0 4px;display:flex;justify-content:space-between;align-items:center;">
       ${date}（${items.length}件）
       <button onclick="deleteHistoryByDate('${date}')" style="background:rgba(255,107,107,0.15);border:none;color:var(--danger);font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;cursor:pointer;">まとめて削除</button>
     </div>`;
+    html += `<div style="font-size:12px;color:var(--accent-light);margin-bottom:8px;padding:0 4px;">${vendorSummary}</div>`;
     items.forEach(item => {
+      const subtotal = (item.price || 0) * (item.quantity || 1);
       html += `
         <div class="card" style="position:relative;">
           <div class="card-left">
@@ -766,6 +779,7 @@ function renderHistoryView(el) {
             <div class="product-meta">
               <span>${esc(item.vendorName)}</span>
               <span>発注時在庫: ${item.stockAtOrder}</span>
+              ${item.price ? `<span>¥${item.price.toLocaleString()} × ${item.quantity} = ¥${subtotal.toLocaleString()}</span>` : ''}
             </div>
           </div>
           <div style="display:flex;align-items:center;gap:10px;">
@@ -1119,6 +1133,7 @@ function confirmOrder() {
       date: now,
       quantity: item.quantity,
       stockAtOrder: p.stock,
+      price: p.price || 0,
     });
     checklistItems.push({
       name: p.name,
