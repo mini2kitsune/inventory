@@ -886,6 +886,7 @@ function renderHistoryView(el) {
       </div></div>`;
     }
 
+    items.sort((a, b) => tokyoRibiyoSortKey(a.productName) - tokyoRibiyoSortKey(b.productName));
     items.forEach(item => {
       const subtotal = (item.price || 0) * (item.quantity || 1);
       html += `
