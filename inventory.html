@@ -316,6 +316,53 @@
       background-position: right 14px center;
     }
 
+    /* ===== Order Vendor Filter ===== */
+    .order-vendor-filter {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      padding-bottom: 16px;
+    }
+    .order-vendor-chip {
+      display: flex; align-items: center; gap: 6px;
+      padding: 8px 14px;
+      border-radius: 20px;
+      font-size: 13px; font-weight: 600;
+      border: 1.5px solid rgba(108,99,255,0.2);
+      cursor: pointer;
+      background: var(--surface2);
+      color: var(--text-sub);
+      transition: all 0.15s;
+    }
+    .order-vendor-chip.selected {
+      background: rgba(108,99,255,0.18);
+      border-color: var(--accent);
+      color: var(--accent-light);
+    }
+    .order-vendor-chip:active { transform: scale(0.93); }
+    .chip-badge {
+      background: rgba(108,99,255,0.25);
+      color: var(--text-sub);
+      font-size: 11px; font-weight: 700;
+      min-width: 18px; height: 18px;
+      border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      padding: 0 4px;
+    }
+    .order-vendor-chip.selected .chip-badge {
+      background: var(--accent);
+      color: #fff;
+    }
+    .order-vendor-filter-all {
+      padding: 8px 14px;
+      border-radius: 20px;
+      font-size: 13px; font-weight: 600;
+      border: 1.5px solid rgba(108,99,255,0.35);
+      background: transparent;
+      color: var(--accent-light);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .order-vendor-filter-all:active { opacity: 0.7; }
+
     /* ===== Settings ===== */
     .settings-section { margin-bottom: 20px; }
     .settings-section h3 {
@@ -450,6 +497,13 @@
       </div>
     </div>
     <div class="settings-section">
+      <h3>並び順管理</h3>
+      <div class="settings-item" onclick="applyTokyoRibiyoSortOrder()">
+        <span class="settings-item-label">仕入先Aの並び順を更新</span>
+        <span class="settings-item-value">&gt;</span>
+      </div>
+    </div>
+    <div class="settings-section">
       <h3>データ</h3>
       <div class="settings-item" onclick="exportData()">
         <span class="settings-item-label">データをエクスポート</span>
@@ -505,6 +559,7 @@ let DATA = loadData() || getDefaultData();
 let currentVendorId = DATA.vendors[0]?.id || '';
 let currentView = 'stock'; // stock | order | history
 let orderCart = []; // { productId, quantity }
+let selectedOrderVendorIds = null; // null = all selected
 let pendingChanges = {}; // productId -> newStock (before save)
 
 // ============================
@@ -648,23 +703,48 @@ function renderOrderView(el) {
     }
   }
 
+  // Build vendorGroups keyed by vendorId
   const vendorGroups = {};
   orderCart.forEach(item => {
     const p = DATA.products.find(x => x.id === item.productId);
     if (!p) return;
     const v = DATA.vendors.find(x => x.id === p.vendorId);
+    const vId = v ? v.id : '__unknown';
     const vName = v ? v.name : '不明';
-    if (!vendorGroups[vName]) vendorGroups[vName] = [];
-    vendorGroups[vName].push({ ...item, product: p });
+    if (!vendorGroups[vId]) vendorGroups[vId] = { name: vName, items: [] };
+    vendorGroups[vId].items.push({ ...item, product: p });
   });
 
-  let html = '';
+  // Initialize vendor selection (all selected by default)
+  const cartVendorIds = Object.keys(vendorGroups);
+  if (!selectedOrderVendorIds) {
+    selectedOrderVendorIds = new Set(cartVendorIds);
+  }
+
+  // Vendor filter chips
+  const allSelected = selectedOrderVendorIds.size === cartVendorIds.length;
+  let html = '<div class="order-vendor-filter">';
+  html += `<button class="order-vendor-filter-all" onclick="selectAllOrderVendors()">${allSelected ? '✓ ' : ''}全選択</button>`;
+  cartVendorIds.forEach(vId => {
+    const vg = vendorGroups[vId];
+    const isSelected = selectedOrderVendorIds.has(vId);
+    const count = vg.items.length;
+    const vendor = DATA.vendors.find(v => v.id === vId);
+    const label = vendor?.shortName || vg.name;
+    html += `<div class="order-vendor-chip${isSelected ? ' selected' : ''}" onclick="toggleOrderVendor('${vId}')">
+      ${esc(label)}<span class="chip-badge">${count}</span>
+    </div>`;
+  });
+  html += '</div>';
+
+  // Render filtered order items
   let grandTotal = 0;
-  for (const [vendor, items] of Object.entries(vendorGroups)) {
-    const vendorTotal = items.reduce((s, it) => s + (it.product.price || 0) * it.quantity, 0);
+  for (const [vId, vg] of Object.entries(vendorGroups)) {
+    if (!selectedOrderVendorIds.has(vId)) continue;
+    const vendorTotal = vg.items.reduce((s, it) => s + (it.product.price || 0) * it.quantity, 0);
     grandTotal += vendorTotal;
-    html += `<div style="font-size:13px;color:var(--text-sub);font-weight:600;margin:16px 0 8px;display:flex;justify-content:space-between;">${esc(vendor)}<span>${vendorTotal.toLocaleString()}円</span></div>`;
-    items.forEach(item => {
+    html += `<div style="font-size:13px;color:var(--text-sub);font-weight:600;margin:16px 0 8px;display:flex;justify-content:space-between;">${esc(vg.name)}<span>${vendorTotal.toLocaleString()}円</span></div>`;
+    vg.items.forEach(item => {
       const idx = orderCart.findIndex(c => c.productId === item.productId);
       const subtotal = (item.product.price || 0) * item.quantity;
       html += `
@@ -689,12 +769,33 @@ function renderOrderView(el) {
         </div>`;
     });
   }
-  // Total summary
+
+  // Total summary (visible vendors only)
+  const totalLabel = allSelected ? '合計金額' : '選択中の合計';
   html += `<div style="background:var(--surface);border-radius:var(--radius);padding:16px;margin-top:16px;text-align:center;">
-    <div style="font-size:13px;color:var(--text-sub);">合計金額</div>
+    <div style="font-size:13px;color:var(--text-sub);">${totalLabel}</div>
     <div style="font-size:28px;font-weight:700;color:var(--warning);margin-top:4px;">¥${grandTotal.toLocaleString()}</div>
   </div>`;
   el.innerHTML = html;
+}
+
+function toggleOrderVendor(vId) {
+  if (!selectedOrderVendorIds) return;
+  if (selectedOrderVendorIds.has(vId)) {
+    if (selectedOrderVendorIds.size > 1) {
+      selectedOrderVendorIds.delete(vId);
+    }
+  } else {
+    selectedOrderVendorIds.add(vId);
+  }
+  renderContent();
+  renderBottomBar();
+}
+
+function selectAllOrderVendors() {
+  selectedOrderVendorIds = null;
+  renderContent();
+  renderBottomBar();
 }
 
 let historyMonth = null; // null = current month
@@ -742,7 +843,7 @@ function renderHistoryView(el) {
   html += `<div style="background:var(--surface);border-radius:var(--radius);padding:12px 16px;margin-bottom:12px;display:flex;justify-content:space-around;text-align:center;">
     <div><div style="font-size:24px;font-weight:700;color:var(--accent-light);">${history.length}</div><div style="font-size:11px;color:var(--text-sub);">件</div></div>
     <div><div style="font-size:24px;font-weight:700;color:var(--accent-light);">${totalItems}</div><div style="font-size:11px;color:var(--text-sub);">個</div></div>
-    <div><div style="font-size:24px;font-weight:700;color:var(--accent-light);">¥${monthTotal.toLocaleString()}</div><div style="font-size:11px;color:var(--text-sub);">月合計（税抜）</div></div>
+    <div><div style="font-size:24px;font-weight:700;color:var(--warning);">¥${monthTotal.toLocaleString()}</div><div style="font-size:11px;color:var(--text-sub);">合計</div></div>
   </div>`;
 
   // Group by date
@@ -756,20 +857,35 @@ function renderHistoryView(el) {
   });
 
   for (const [date, items] of Object.entries(groups)) {
-    // Vendor totals per date
+    // 仕入先ごとの合計金額を計算
     const vendorTotals = {};
+    let dateTotal = 0;
     items.forEach(item => {
-      const vn = item.vendorName || '不明';
-      if (!vendorTotals[vn]) vendorTotals[vn] = 0;
-      vendorTotals[vn] += (item.price || 0) * (item.quantity || 1);
+      const vName = item.vendorName || '不明';
+      const sub = (item.price || 0) * (item.quantity || 1);
+      vendorTotals[vName] = (vendorTotals[vName] || 0) + sub;
+      dateTotal += sub;
     });
-    const vendorSummary = Object.entries(vendorTotals).map(([v, t]) => `${v}: ¥${t.toLocaleString()}`).join('　');
 
-    html += `<div style="font-size:13px;color:var(--text-sub);font-weight:600;margin:16px 0 4px;display:flex;justify-content:space-between;align-items:center;">
+    html += `<div style="font-size:13px;color:var(--text-sub);font-weight:600;margin:16px 0 8px;display:flex;justify-content:space-between;align-items:center;">
       ${date}（${items.length}件）
       <button onclick="deleteHistoryByDate('${date}')" style="background:rgba(255,107,107,0.15);border:none;color:var(--danger);font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;cursor:pointer;">まとめて削除</button>
     </div>`;
-    html += `<div style="font-size:12px;color:var(--accent-light);margin-bottom:8px;padding:0 4px;">${vendorSummary}</div>`;
+
+    if (dateTotal > 0) {
+      html += `<div style="background:var(--surface);border-radius:var(--radius);padding:10px 14px;margin-bottom:8px;">`;
+      for (const [vName, vTotal] of Object.entries(vendorTotals)) {
+        html += `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;">
+          <span style="color:var(--text-sub);">${esc(vName)}</span>
+          <span style="color:var(--accent-light);font-weight:600;">¥${vTotal.toLocaleString()}</span>
+        </div>`;
+      }
+      html += `<div style="display:flex;justify-content:space-between;padding:6px 0 2px;margin-top:4px;border-top:1px solid rgba(108,99,255,0.2);font-size:14px;font-weight:700;">
+        <span>合計</span>
+        <span style="color:var(--warning);">¥${dateTotal.toLocaleString()}</span>
+      </div></div>`;
+    }
+
     items.forEach(item => {
       const subtotal = (item.price || 0) * (item.quantity || 1);
       html += `
@@ -779,11 +895,12 @@ function renderHistoryView(el) {
             <div class="product-meta">
               <span>${esc(item.vendorName)}</span>
               <span>発注時在庫: ${item.stockAtOrder}</span>
-              ${item.price ? `<span>¥${item.price.toLocaleString()} × ${item.quantity} = ¥${subtotal.toLocaleString()}</span>` : ''}
+              ${item.price ? `<span>¥${item.price.toLocaleString()}</span>` : ''}
             </div>
           </div>
           <div style="display:flex;align-items:center;gap:10px;">
             <div style="font-size:20px;font-weight:700;color:var(--accent-light);">×${item.quantity}</div>
+            ${subtotal > 0 ? `<div style="font-size:13px;color:var(--text-sub);">¥${subtotal.toLocaleString()}</div>` : ''}
             <button onclick="deleteHistory('${item.id}')" style="background:none;border:none;color:var(--text-sub);font-size:18px;cursor:pointer;padding:4px;">&times;</button>
           </div>
         </div>`;
@@ -873,10 +990,15 @@ function renderBottomBar() {
     }
   } else if (currentView === 'order') {
     if (orderCart.length > 0) {
+      const visibleCount = orderCart.filter(item => {
+        if (!selectedOrderVendorIds) return true;
+        const p = DATA.products.find(x => x.id === item.productId);
+        return p && selectedOrderVendorIds.has(p.vendorId);
+      }).length;
       bar.style.display = 'block';
-      btn.disabled = false;
+      btn.disabled = visibleCount === 0;
       btn.className = 'action-btn confirm';
-      btn.textContent = `発注を確定する（${orderCart.length}件）`;
+      btn.textContent = `発注を確定する（${visibleCount}件）`;
       btn.onclick = confirmOrder;
     } else {
       bar.style.display = 'none';
@@ -1115,13 +1237,18 @@ function removeFromCart(index) {
 }
 
 function confirmOrder() {
-  if (orderCart.length === 0) return;
-  if (!confirm(`${orderCart.length}件の発注を確定しますか？`)) return;
+  // Confirm only items for selected vendors
+  const targetItems = orderCart.filter(item => {
+    if (!selectedOrderVendorIds) return true;
+    const p = DATA.products.find(x => x.id === item.productId);
+    return p && selectedOrderVendorIds.has(p.vendorId);
+  });
+  if (targetItems.length === 0) return;
+  if (!confirm(`${targetItems.length}件の発注を確定しますか？`)) return;
 
   const now = new Date().toISOString();
-  // Build checklist data before clearing cart
   const checklistItems = [];
-  orderCart.forEach(item => {
+  targetItems.forEach(item => {
     const p = DATA.products.find(x => x.id === item.productId);
     if (!p) return;
     DATA.orderHistory.push({
@@ -1144,7 +1271,12 @@ function confirmOrder() {
     });
   });
 
-  orderCart = [];
+  // Remove confirmed items from cart; keep unselected vendors' items
+  const confirmedIds = new Set(targetItems.map(i => i.productId));
+  orderCart = orderCart.filter(item => !confirmedIds.has(item.productId));
+  if (orderCart.length === 0) {
+    selectedOrderVendorIds = null;
+  }
   saveData(DATA);
   showChecklist(checklistItems);
 }
@@ -1463,6 +1595,95 @@ function showToast(msg) {
   t.textContent = msg;
   t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+// ============================
+// 仕入先A 並び順管理
+// ============================
+function tokyoRibiyoSortKey(name) {
+  const n = name.trim();
+
+  // 1. CSオアシック系（ストレート剤 / ヘアマニキュア）
+  // 指定順: L-B→M-B→D-B→L-N→M-N→D-N→M-AB→Black→S.Gray→Clear→P-N
+  if (n.includes('CSオアシック')) {
+    const subOrder = ['L-B','M-B','D-B','L-N','M-N','D-N','M-AB','Black','S.Gray','Clear','P-N'];
+    const si = subOrder.findIndex(s => n.includes(s));
+    return 100000 + (si >= 0 ? si * 10 : 990);
+  }
+
+  // 2. コスメカール系（パーマ剤）
+  if (n.includes('コスメカール')) return 200000;
+
+  // 5. フェス OX系
+  if (n.includes('OX')) return 500000;
+
+  // 8. アジアンカラー フェス クリア系
+  if (n.includes('フェス') && n.includes('クリア')) return 800000;
+
+  if (n.includes('フェス')) {
+    // 3. アジアンカラー フェス カラー剤（色別）
+    // 色順: ナチュラル→マット→アッシュ→グレイ→バイオレット→ピンク→レッド→オレンジ
+    // 各色内: 14→12→10→8→6→5
+    const colorOrder = ['ナチュラル','マット','アッシュ','グレイ','バイオレット','ピンク','レッド','オレンジ'];
+    const ci = colorOrder.findIndex(c => n.includes(c));
+    if (ci >= 0) {
+      const numMatch = n.match(/(\d+)/);
+      const num = numMatch ? parseInt(numMatch[1]) : 0;
+      const numOrder = [14,12,10,8,6,5,4,3,2,1];
+      const ni = numOrder.indexOf(num);
+      return 300000 + ci * 1000 + (ni >= 0 ? ni * 10 : 990);
+    }
+
+    // 4. アジアンカラー フェス アルファベット系
+    // アルファベット順: N→M→A→G→V→P、各内: 番号大→小
+    const alphaOrder = ['N','M','A','G','V','P'];
+    for (let ai = 0; ai < alphaOrder.length; ai++) {
+      const regex = new RegExp('フェス\\s*' + alphaOrder[ai] + '\\d*');
+      if (regex.test(n)) {
+        const numMatch = n.match(/(\d+)/);
+        const num = numMatch ? parseInt(numMatch[1]) : 0;
+        const numOrder = [14,12,10,8,6,5,4,3,2,1];
+        const ni = numOrder.indexOf(num);
+        return 400000 + ai * 1000 + (ni >= 0 ? ni * 10 : 990);
+      }
+    }
+
+    return 450000; // その他フェス
+  }
+
+  // 6. ティアーズ・デベロッパー
+  if (n.includes('ティアーズ') || n.includes('デベロッパー')) return 600000;
+
+  // 7. カラーストーリー プライム
+  if (n.includes('カラーストーリー') || n.includes('プライム')) return 700000;
+
+  // 9. クオライン系（ストレート剤）
+  if (n.includes('クオライン')) return 900000;
+
+  return 999999;
+}
+
+function applyTokyoRibiyoSortOrder() {
+  // 対象仕入先を商品名パターンで自動検出
+  const vendor = DATA.vendors.find(v => {
+    const prods = DATA.products.filter(p => p.vendorId === v.id && p.active !== false);
+    return prods.some(p => p.name && (p.name.includes('フェス') || p.name.includes('CSオアシック')));
+  });
+  if (!vendor) {
+    showToast('対象の仕入先が見つかりません');
+    return;
+  }
+  const products = DATA.products.filter(p => p.vendorId === vendor.id && p.active !== false);
+  if (products.length === 0) {
+    showToast('商品が見つかりません');
+    return;
+  }
+  products.sort((a, b) => tokyoRibiyoSortKey(a.name) - tokyoRibiyoSortKey(b.name));
+  products.forEach((p, i) => { p.sortOrder = (i + 1) * 10; });
+  saveData(DATA);
+  render();
+  showToast(products.length + '商品の並び順を更新しました');
+  closeModal('settings');
 }
 
 // ============================
