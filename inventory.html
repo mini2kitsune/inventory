@@ -517,6 +517,13 @@
         <span class="settings-item-label settings-danger">全データを削除</span>
       </div>
     </div>
+    <div class="settings-section">
+      <h3>アプリ更新</h3>
+      <div class="settings-item" onclick="forceUpdate()">
+        <span class="settings-item-label" style="color:var(--success)">最新版に更新</span>
+        <span class="settings-item-value">&gt;</span>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1677,6 +1684,14 @@ function applyTokyoRibiyoSortOrder() {
   render();
   showToast(products.length + '商品の並び順を更新しました');
   closeModal('settings');
+}
+
+function forceUpdate() {
+  if (!confirm('最新版に更新します。データは消えません。よろしいですか？')) return;
+  if ('caches' in window) {
+    caches.keys().then(names => names.forEach(name => caches.delete(name)));
+  }
+  location.reload(true);
 }
 
 // ============================
