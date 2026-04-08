@@ -1603,62 +1603,54 @@ function showToast(msg) {
 function tokyoRibiyoSortKey(name) {
   const n = name.trim();
 
-  // 1. CSオアシック系（ストレート剤 / ヘアマニキュア）
-  // 指定順: L-B→M-B→D-B→L-N→M-N→D-N→M-AB→Black→S.Gray→Clear→P-N
-  if (n.includes('CSオアシック')) {
-    const subOrder = ['L-B','M-B','D-B','L-N','M-N','D-N','M-AB','Black','S.Gray','Clear','P-N'];
-    const si = subOrder.findIndex(s => n.includes(s));
-    return 100000 + (si >= 0 ? si * 10 : 990);
+  // 1. ヘアマニキュア系（L-B, M-B, D-B, L-N, M-N, D-N, M-AB, Black, S.Gray, Clear, P-N）
+  const maniOrder = ['L-B','M-B','D-B','L-N','M-N','D-N','M-AB','Black','S.Gray','Clear','P-N'];
+  const mi = maniOrder.findIndex(s => n === s);
+  if (mi >= 0) return 100000 + mi * 10;
+
+  // 2. パーマ剤（コスメ系、プリズムプラス、アフターローション）
+  if (n.includes('コスメ') || n.includes('プリズムプラス') || n === 'アフターローション') return 200000;
+
+  // 3. カラー剤（数字+色名: 14ナチュラル, 8マット等）
+  const colorOrder = ['ナチュラル','マット','アッシュ','グレイ','バイオレット','ピンク','レッド','オレンジ'];
+  const ci = colorOrder.findIndex(c => n.includes(c));
+  if (ci >= 0) {
+    const numMatch = n.match(/^(\d+)/);
+    const num = numMatch ? parseInt(numMatch[1]) : 0;
+    const numOrder = [14,12,10,8,6,5,4,3,2,1];
+    const ni = numOrder.indexOf(num);
+    return 300000 + ci * 1000 + (ni >= 0 ? ni * 10 : 990);
   }
 
-  // 2. コスメカール系（パーマ剤）
-  if (n.includes('コスメカール')) return 200000;
-
-  // 5. フェス OX系
-  if (n.includes('OX')) return 500000;
-
-  // 8. アジアンカラー フェス クリア系
-  if (n.includes('フェス') && n.includes('クリア')) return 800000;
-
-  if (n.includes('フェス')) {
-    // 3. アジアンカラー フェス カラー剤（色別）
-    // 色順: ナチュラル→マット→アッシュ→グレイ→バイオレット→ピンク→レッド→オレンジ
-    // 各色内: 14→12→10→8→6→5
-    const colorOrder = ['ナチュラル','マット','アッシュ','グレイ','バイオレット','ピンク','レッド','オレンジ'];
-    const ci = colorOrder.findIndex(c => n.includes(c));
-    if (ci >= 0) {
+  // 4. アルファベット系（N10, M8, A8, G8, V8, P8, OR8, R8等）
+  const alphaOrder = ['N','M','A','G','V','P','OR','R'];
+  for (let ai = 0; ai < alphaOrder.length; ai++) {
+    const regex = new RegExp('^' + alphaOrder[ai] + '\\d+$');
+    if (regex.test(n)) {
       const numMatch = n.match(/(\d+)/);
       const num = numMatch ? parseInt(numMatch[1]) : 0;
       const numOrder = [14,12,10,8,6,5,4,3,2,1];
       const ni = numOrder.indexOf(num);
-      return 300000 + ci * 1000 + (ni >= 0 ? ni * 10 : 990);
+      return 400000 + ai * 1000 + (ni >= 0 ? ni * 10 : 990);
     }
-
-    // 4. アジアンカラー フェス アルファベット系
-    // アルファベット順: N→M→A→G→V→P、各内: 番号大→小
-    const alphaOrder = ['N','M','A','G','V','P'];
-    for (let ai = 0; ai < alphaOrder.length; ai++) {
-      const regex = new RegExp('フェス\\s*' + alphaOrder[ai] + '\\d*');
-      if (regex.test(n)) {
-        const numMatch = n.match(/(\d+)/);
-        const num = numMatch ? parseInt(numMatch[1]) : 0;
-        const numOrder = [14,12,10,8,6,5,4,3,2,1];
-        const ni = numOrder.indexOf(num);
-        return 400000 + ai * 1000 + (ni >= 0 ? ni * 10 : 990);
-      }
-    }
-
-    return 450000; // その他フェス
   }
 
-  // 6. ティアーズ・デベロッパー
-  if (n.includes('ティアーズ') || n.includes('デベロッパー')) return 600000;
+  // 5. OX系
+  if (n.includes('OX') && !n.includes('クオライン')) return 500000;
 
-  // 7. カラーストーリー プライム
-  if (n.includes('カラーストーリー') || n.includes('プライム')) return 700000;
+  // 6. ティアーズ・ブリーチ
+  if (n.includes('ティアーズ')) return 600000;
+  if (n === 'ブリーチ') return 610000;
 
-  // 9. クオライン系（ストレート剤）
-  if (n.includes('クオライン')) return 900000;
+  // 7. カラーストーリー（タマリス、NB）
+  if (n.includes('タマリス') || n.match(/^\d*NB$/)) return 700000;
+
+  // 8. クリア系・conc系
+  if (n.includes('クリア')) return 800000;
+  if (n.includes('conc.')) return 810000;
+
+  // 9. クオライン系・アジャスト
+  if (n.includes('クオライン') || n.includes('アジャスト')) return 900000;
 
   return 999999;
 }
@@ -1667,7 +1659,7 @@ function applyTokyoRibiyoSortOrder() {
   // 対象仕入先を商品名パターンで自動検出
   const vendor = DATA.vendors.find(v => {
     const prods = DATA.products.filter(p => p.vendorId === v.id && p.active !== false);
-    return prods.some(p => p.name && (p.name.includes('フェス') || p.name.includes('CSオアシック')));
+    return prods.some(p => p.name && (p.name.includes('ナチュラル') || p.name.includes('conc.') || p.name.includes('クオライン') || p.name.includes('ティアーズ')));
   });
   if (!vendor) {
     showToast('対象の仕入先が見つかりません');
