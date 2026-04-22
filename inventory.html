@@ -1216,6 +1216,7 @@ function saveManualHistory() {
       date: orderDate,
       quantity,
       stockAtOrder: p.stock,
+      price: p.price || 0,
     });
   });
 
@@ -1248,21 +1249,32 @@ function confirmOrder() {
   if (!confirm(`${targetItems.length}件の発注を確定しますか？`)) return;
 
   const now = new Date().toISOString();
+  const todayStr = new Date(now).toLocaleDateString('ja-JP');
   const checklistItems = [];
   targetItems.forEach(item => {
     const p = DATA.products.find(x => x.id === item.productId);
     if (!p) return;
-    DATA.orderHistory.push({
-      id: uid(),
-      productId: item.productId,
-      vendorId: p.vendorId,
-      productName: p.name,
-      vendorName: DATA.vendors.find(v => v.id === p.vendorId)?.name || '',
-      date: now,
-      quantity: item.quantity,
-      stockAtOrder: p.stock,
-      price: p.price || 0,
-    });
+    // 同日に同商品の既存エントリがあれば数量を加算して統合する
+    const existing = DATA.orderHistory.find(h =>
+      h.productId === item.productId &&
+      new Date(h.date).toLocaleDateString('ja-JP') === todayStr
+    );
+    if (existing) {
+      existing.quantity += item.quantity;
+      existing.price = p.price || 0;
+    } else {
+      DATA.orderHistory.push({
+        id: uid(),
+        productId: item.productId,
+        vendorId: p.vendorId,
+        productName: p.name,
+        vendorName: DATA.vendors.find(v => v.id === p.vendorId)?.name || '',
+        date: now,
+        quantity: item.quantity,
+        stockAtOrder: p.stock,
+        price: p.price || 0,
+      });
+    }
     checklistItems.push({
       name: p.name,
       quantity: item.quantity,
