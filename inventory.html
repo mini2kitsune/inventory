@@ -478,8 +478,14 @@
       <select class="form-select" id="histVendor" onchange="updateHistProducts()"></select>
     </div>
     <div class="form-group">
+      <div style="position:relative;">
+        <input class="form-input" id="histSearch" type="text" placeholder="商品名で検索..." oninput="updateHistProducts()" autocomplete="off" style="padding-right:36px;">
+        <button onclick="clearHistSearch()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-sub);font-size:20px;cursor:pointer;line-height:1;">&times;</button>
+      </div>
+    </div>
+    <div class="form-group">
       <label class="form-label">商品（複数選択可）</label>
-      <div id="histProductList" style="max-height:300px;overflow-y:auto;"></div>
+      <div id="histProductList" style="max-height:260px;overflow-y:auto;"></div>
     </div>
     <button class="action-btn" onclick="saveManualHistory()" style="margin-top:8px">履歴に追加</button>
   </div>
@@ -1156,13 +1162,23 @@ function initHistoryModal() {
     `<option value="${v.id}"${v.id === currentVendorId ? ' selected' : ''}>${esc(v.name)}</option>`
   ).join('');
   manualHistoryItems = {};
+  const searchEl = document.getElementById('histSearch');
+  if (searchEl) searchEl.value = '';
+  updateHistProducts();
+}
+
+function clearHistSearch() {
+  const el = document.getElementById('histSearch');
+  if (el) { el.value = ''; el.focus(); }
   updateHistProducts();
 }
 
 function updateHistProducts() {
   const vendorId = document.getElementById('histVendor').value;
+  const query = (document.getElementById('histSearch')?.value || '').toLowerCase();
   const products = DATA.products
     .filter(p => p.vendorId === vendorId && p.active !== false)
+    .filter(p => !query || p.name.toLowerCase().includes(query))
     .sort((a,b) => (a.sortOrder || 0) - (b.sortOrder || 0));
 
   const el = document.getElementById('histProductList');
