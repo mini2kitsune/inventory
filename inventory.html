@@ -1204,20 +1204,30 @@ function saveManualHistory() {
 
   const dateVal = document.getElementById('histDate').value;
   const orderDate = dateVal ? new Date(dateVal + 'T12:00:00').toISOString() : new Date().toISOString();
+  const orderDateStr = new Date(orderDate).toLocaleDateString('ja-JP');
   entries.forEach(([productId, quantity]) => {
     const p = DATA.products.find(x => x.id === productId);
     if (!p) return;
-    DATA.orderHistory.push({
-      id: uid(),
-      productId,
-      vendorId: p.vendorId,
-      productName: p.name,
-      vendorName: DATA.vendors.find(v => v.id === p.vendorId)?.name || '',
-      date: orderDate,
-      quantity,
-      stockAtOrder: p.stock,
-      price: p.price || 0,
-    });
+    // 同日に同商品の既存エントリがあれば数量を加算して統合する
+    const existing = DATA.orderHistory.find(h =>
+      h.productId === productId &&
+      new Date(h.date).toLocaleDateString('ja-JP') === orderDateStr
+    );
+    if (existing) {
+      existing.quantity += quantity;
+    } else {
+      DATA.orderHistory.push({
+        id: uid(),
+        productId,
+        vendorId: p.vendorId,
+        productName: p.name,
+        vendorName: DATA.vendors.find(v => v.id === p.vendorId)?.name || '',
+        date: orderDate,
+        quantity,
+        stockAtOrder: p.stock,
+        price: p.price || 0,
+      });
+    }
   });
 
   saveData(DATA);
