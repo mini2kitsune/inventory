@@ -1338,7 +1338,7 @@ function showChecklist(items) {
     <button onclick="shareOrder()" style="flex:1;padding:12px;background:var(--accent);border:none;border-radius:10px;color:#fff;font-size:14px;font-weight:600;cursor:pointer;">
       共有・送信
     </button>
-    <button onclick="copyOrderText()" style="flex:1;padding:12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--text);font-size:14px;font-weight:600;cursor:pointer;">
+    <button id="copyOrderBtn" onclick="copyOrderText()" style="flex:1;padding:12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--text);font-size:14px;font-weight:600;cursor:pointer;">
       コピー
     </button>
   </div>`;
@@ -1417,17 +1417,22 @@ function shareOrder() {
 
 function copyOrderText() {
   const text = buildOrderText();
-  navigator.clipboard.writeText(text).then(() => {
+  const btn = document.getElementById('copyOrderBtn');
+  const onSuccess = () => {
     showToast('コピーしました');
-  }).catch(() => {
-    // Fallback
+    if (btn) {
+      btn.textContent = '✓ コピー済';
+      setTimeout(() => { btn.textContent = 'コピー'; }, 2000);
+    }
+  };
+  navigator.clipboard.writeText(text).then(onSuccess).catch(() => {
     const ta = document.createElement('textarea');
     ta.value = text;
     document.body.appendChild(ta);
     ta.select();
     document.execCommand('copy');
     document.body.removeChild(ta);
-    showToast('コピーしました');
+    onSuccess();
   });
 }
 
