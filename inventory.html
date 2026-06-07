@@ -43,10 +43,18 @@
     .header-top {
       display: flex; align-items: center; justify-content: space-between;
     }
+    .header-title {
+      display: flex; align-items: center; gap: 8px;
+    }
     .header h1 {
       font-size: 20px; font-weight: 700;
       background: linear-gradient(135deg, var(--accent-light), #a78bfa);
       -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .online-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--success); flex-shrink: 0;
+      transition: background 0.3s;
     }
     .header-actions { display: flex; gap: 8px; }
     .icon-btn {
@@ -382,13 +390,63 @@
     .settings-item-label { font-size: 14px; }
     .settings-item-value { font-size: 14px; color: var(--text-sub); }
     .settings-danger { color: var(--danger); }
+
+    /* ===== Stocktaking Check (UX-1) ===== */
+    .stk-check {
+      width: 24px; height: 24px; flex-shrink: 0;
+      border: 2px solid rgba(108,99,255,0.3);
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; transition: all 0.15s;
+      background: var(--surface2);
+    }
+    .stk-check:active { transform: scale(0.88); }
+    .card.stk-checked { opacity: 0.5; background: rgba(136,136,160,0.08); }
+    .card.stk-checked .stk-check {
+      border-color: var(--success);
+      background: rgba(81,207,102,0.12);
+    }
+    .prev-qty-hint {
+      font-size: 10px; color: var(--text-sub);
+      font-weight: 500; min-height: 13px; text-align: center;
+    }
+
+    /* ===== Login Overlay ===== */
+    #loginOverlay {
+      position: fixed; inset: 0;
+      background: var(--bg);
+      z-index: 500;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 24px;
+    }
+    .login-loading {
+      text-align: center;
+    }
+    .login-spinner {
+      width: 40px; height: 40px;
+      border: 3px solid rgba(108,99,255,0.2);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 16px auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .login-form-wrap {
+      display: none;
+      width: 100%; max-width: 400px;
+    }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
 <div class="header">
   <div class="header-top">
-    <h1>在庫管理</h1>
+    <div class="header-title">
+      <div class="online-dot" id="onlineIndicator" title="オンライン"></div>
+      <h1>在庫管理</h1>
+    </div>
     <div class="header-actions">
       <button class="icon-btn" onclick="openModal('addProduct')" title="商品追加">+</button>
       <button class="icon-btn" onclick="openModal('settings')" title="設定">
@@ -517,10 +575,23 @@
       </div>
     </div>
     <div class="settings-section">
+      <h3>データ移行</h3>
+      <div class="settings-item" onclick="migrateFromLocalStorage()">
+        <span class="settings-item-label" style="color:var(--warning)">📤 Supabaseへ移行（旧端末データ復元）</span>
+        <span class="settings-item-value">&gt;</span>
+      </div>
+    </div>
+    <div class="settings-section">
       <h3>アプリ更新</h3>
       <div class="settings-item" onclick="forceUpdate()">
         <span class="settings-item-label" style="color:var(--success)">最新版に更新</span>
         <span class="settings-item-value">&gt;</span>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h3>アカウント</h3>
+      <div class="settings-item" onclick="doLogout()">
+        <span class="settings-item-label settings-danger">ログアウト</span>
       </div>
     </div>
   </div>
@@ -529,13 +600,66 @@
 <!-- インポート用隠しinput -->
 <input type="file" id="importFile" accept=".json" style="display:none" onchange="handleImport(event)">
 
+<!-- ログインオーバーレイ -->
+<div id="loginOverlay">
+  <!-- ローディング表示（初期） -->
+  <div class="login-loading" id="loginLoading">
+    <div style="font-size:48px;margin-bottom:8px;">📦</div>
+    <div class="login-spinner"></div>
+    <div style="color:var(--text-sub);font-size:14px;">読み込み中...</div>
+  </div>
+  <!-- ログインフォーム（セッションなし時に表示） -->
+  <div class="login-form-wrap" id="loginForm">
+    <div style="text-align:center;margin-bottom:32px;">
+      <div style="font-size:52px;margin-bottom:10px;">📦</div>
+      <h1 style="font-size:22px;font-weight:700;background:linear-gradient(135deg,var(--accent-light),#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">在庫管理</h1>
+    </div>
+    <!-- タブ切替 -->
+    <div style="display:flex;background:var(--surface2);border-radius:10px;padding:3px;margin-bottom:20px;">
+      <button id="tabSignIn" onclick="switchAuthTab('signin')"
+        style="flex:1;padding:8px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;background:var(--accent);color:#fff;transition:all 0.2s;">
+        ログイン
+      </button>
+      <button id="tabSignUp" onclick="switchAuthTab('signup')"
+        style="flex:1;padding:8px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;background:transparent;color:var(--text-sub);transition:all 0.2s;">
+        新規登録
+      </button>
+    </div>
+    <div class="form-group">
+      <label class="form-label">メールアドレス</label>
+      <input class="form-input" id="loginEmail" type="email" placeholder="メールアドレス" autocomplete="email" inputmode="email">
+    </div>
+    <div class="form-group">
+      <label class="form-label">パスワード</label>
+      <input class="form-input" id="loginPassword" type="password" placeholder="パスワード" autocomplete="current-password"
+        onkeydown="if(event.key==='Enter')doAuthAction()">
+    </div>
+    <div id="loginError" style="color:var(--danger);font-size:13px;margin-bottom:12px;text-align:center;min-height:18px;"></div>
+    <button id="loginBtn" class="action-btn" onclick="doAuthAction()">ログイン</button>
+  </div>
+</div>
+
 <script>
+// ============================
+// Constants
+// ============================
+const SUPABASE_URL = 'https://tglxsjwvkezoxccvbqfy.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_VbmYrasMK9ieIv9e8KiBJA_Eh1BuhN2';
+const TENANT_ID = '4177e1bd-a31d-42bb-9e8f-0f1acddf3b45';
+
+// ============================
+// Global State
+// ============================
+let sbClient = null;
+let currentUser = null;
+let isOnline = navigator.onLine;
+
 // ============================
 // Data Layer
 // ============================
 const STORAGE_KEY = 'inventory_app';
 
-function loadData() {
+function loadDataFromCache() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
@@ -549,19 +673,14 @@ function saveData(data) {
 
 function getDefaultData() {
   return {
-    vendors: [
-      { id: 'v1', name: '仕入先A', shortName: '仕入先A', sortOrder: 0 },
-      { id: 'v2', name: '仕入先B', shortName: '仕入先B', sortOrder: 1 },
-      { id: 'v3', name: '仕入先C', shortName: '仕入先C', sortOrder: 2 },
-      { id: 'v4', name: '仕入先D', shortName: '仕入先D', sortOrder: 3 },
-    ],
+    vendors: [],
     products: [],
     orderHistory: [],
     stocktakingHistory: [],
   };
 }
 
-let DATA = loadData() || getDefaultData();
+let DATA = loadDataFromCache() || getDefaultData();
 let currentVendorId = DATA.vendors[0]?.id || '';
 let currentView = 'stock'; // stock | order | history
 let orderCart = []; // { productId, quantity }
@@ -569,59 +688,255 @@ let selectedOrderVendorIds = null; // null = all selected
 let pendingChanges = {}; // productId -> newStock (before save)
 
 // ============================
-// Initial Data Import
+// Online / Offline
 // ============================
-
-function showWelcome() {
-  document.getElementById('content').style.marginTop = '20px';
-  document.querySelector('.header').style.display = 'none';
-  document.getElementById('content').innerHTML = `
-    <div style="text-align:center;padding:60px 20px;">
-      <div style="font-size:48px;margin-bottom:16px;">📦</div>
-      <h2 style="font-size:22px;margin-bottom:8px;background:linear-gradient(135deg,var(--accent-light),#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">在庫管理アプリ</h2>
-      <p style="color:var(--text-sub);margin-bottom:32px;font-size:14px;">スプレッドシートのデータを読み込んで始めましょう</p>
-      <label style="display:inline-block;padding:14px 32px;background:var(--accent);color:#fff;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;">
-        データファイルを選択
-        <input type="file" accept=".json" style="display:none" onchange="handleInitialImport(event)">
-      </label>
-      <p style="color:var(--text-sub);margin-top:16px;font-size:12px;">inventory_data.json を選んでください</p>
-      <div style="margin-top:40px;border-top:1px solid var(--surface2);padding-top:20px;">
-        <button onclick="skipImport()" style="background:none;border:none;color:var(--text-sub);font-size:14px;cursor:pointer;text-decoration:underline;">
-          空の状態で始める
-        </button>
-      </div>
-    </div>`;
+function updateOnlineStatus() {
+  const dot = document.getElementById('onlineIndicator');
+  if (!dot) return;
+  dot.style.background = isOnline ? 'var(--success)' : 'var(--text-sub)';
+  dot.title = isOnline ? 'オンライン' : 'オフライン（キャッシュ使用中）';
 }
 
-function handleInitialImport(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = function(ev) {
-    try {
-      const imported = JSON.parse(ev.target.result);
-      if (!imported.vendors || !imported.products) {
-        showToast('無効なデータです');
-        return;
-      }
-      DATA = imported;
-      saveData(DATA);
-      currentVendorId = DATA.vendors[0]?.id || '';
-      document.querySelector('.header').style.display = '';
-      document.getElementById('content').style.marginTop = '';
-      showToast(`${DATA.products.length}商品・${DATA.orderHistory.length}件の履歴を読み込みました`);
-      render();
-    } catch(err) {
-      showToast('ファイルの読み込みに失敗しました');
+// ============================
+// Auth
+// ============================
+let authMode = 'signin'; // 'signin' | 'signup'
+
+function switchAuthTab(mode) {
+  authMode = mode;
+  const isSignUp = mode === 'signup';
+  document.getElementById('tabSignIn').style.background = isSignUp ? 'transparent' : 'var(--accent)';
+  document.getElementById('tabSignIn').style.color = isSignUp ? 'var(--text-sub)' : '#fff';
+  document.getElementById('tabSignUp').style.background = isSignUp ? 'var(--accent)' : 'transparent';
+  document.getElementById('tabSignUp').style.color = isSignUp ? '#fff' : 'var(--text-sub)';
+  document.getElementById('loginBtn').textContent = isSignUp ? '新規登録' : 'ログイン';
+  document.getElementById('loginError').textContent = '';
+}
+
+function showLoginForm() {
+  document.getElementById('loginLoading').style.display = 'none';
+  document.getElementById('loginForm').style.display = '';
+  document.getElementById('loginOverlay').style.display = 'flex';
+}
+
+async function doAuthAction() {
+  const email = (document.getElementById('loginEmail').value || '').trim();
+  const password = document.getElementById('loginPassword').value || '';
+  const errEl = document.getElementById('loginError');
+  const btn = document.getElementById('loginBtn');
+
+  if (!email || !password) {
+    errEl.textContent = 'メールとパスワードを入力してください';
+    return;
+  }
+  if (authMode === 'signup' && password.length < 6) {
+    errEl.textContent = 'パスワードは6文字以上で入力してください';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = authMode === 'signup' ? '登録中...' : 'ログイン中...';
+  errEl.textContent = '';
+
+  try {
+    if (authMode === 'signup') {
+      const { error } = await sbClient.auth.signUp({ email, password });
+      if (error) throw error;
+      errEl.style.color = 'var(--success)';
+      errEl.textContent = '登録メールを送信しました。確認後ログインしてください。';
+      btn.disabled = false;
+      btn.textContent = '新規登録';
+      return;
     }
-  };
-  reader.readAsText(file);
+    const { error } = await sbClient.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+    // onAuthStateChange (SIGNED_IN) will handle closing the overlay
+  } catch(e) {
+    let msg = e.message || (authMode === 'signup' ? '登録に失敗しました' : 'ログインに失敗しました');
+    if (msg === 'Invalid login credentials') msg = 'メールかパスワードが正しくありません';
+    errEl.style.color = 'var(--danger)';
+    errEl.textContent = msg;
+    btn.disabled = false;
+    btn.textContent = authMode === 'signup' ? '新規登録' : 'ログイン';
+  }
 }
 
-function skipImport() {
-  document.querySelector('.header').style.display = '';
-  document.getElementById('content').style.marginTop = '';
-  render();
+async function doLogout() {
+  closeModal('settings');
+  await sbClient.auth.signOut();
+  DATA = getDefaultData();
+  currentVendorId = '';
+  orderCart = [];
+  pendingChanges = {};
+  showLoginForm();
+}
+
+// ============================
+// Supabase Data Loading
+// ============================
+async function loadDataFromSupabase() {
+  if (!sbClient) return;
+  try {
+    const [vRes, pRes, iRes, ohRes, shRes] = await Promise.all([
+      sbClient.from('vendors').select('*').eq('tenant_id', TENANT_ID).eq('is_active', true).order('sort_order'),
+      sbClient.from('products').select('*').eq('tenant_id', TENANT_ID).eq('is_active', true).order('sort_order'),
+      sbClient.from('inventory').select('*').eq('tenant_id', TENANT_ID),
+      sbClient.from('order_history').select('*').eq('tenant_id', TENANT_ID).order('order_date', { ascending: false }).limit(500),
+      sbClient.from('stocktaking_history').select('*').eq('tenant_id', TENANT_ID).order('stocktaking_date', { ascending: false }).limit(200),
+    ]);
+
+    if (vRes.error) throw vRes.error;
+
+    const invMap = {};
+    (iRes.data || []).forEach(inv => { invMap[inv.product_id] = inv; });
+
+    DATA.vendors = (vRes.data || []).map(v => ({
+      id: v.id,
+      name: v.name,
+      shortName: v.short_name || v.name,
+      sortOrder: v.sort_order,
+    }));
+
+    DATA.products = (pRes.data || []).map(p => {
+      const inv = invMap[p.id] || {};
+      return {
+        id: p.id,
+        vendorId: p.vendor_id,
+        name: p.name,
+        stock: inv.current_stock ?? 0,
+        minStock: inv.ideal_stock ?? 0,
+        sortOrder: p.sort_order,
+        active: true,
+        price: p.price || 0,
+        monthlyConsumption: parseFloat(inv.monthly_consumption || 0),
+        seasonalFactor: parseFloat(inv.seasonal_factor || 1),
+      };
+    });
+
+    // Build lookup maps after products are loaded
+    const productMap = {};
+    DATA.products.forEach(p => { productMap[p.id] = p; });
+    const vendorMap = {};
+    DATA.vendors.forEach(v => { vendorMap[v.id] = v; });
+
+    DATA.orderHistory = (ohRes.data || []).map(h => ({
+      id: h.id,
+      productId: h.product_id,
+      vendorId: h.vendor_id,
+      productName: productMap[h.product_id]?.name || '削除済み',
+      vendorName: vendorMap[h.vendor_id]?.name || '',
+      date: h.order_date,
+      quantity: h.quantity,
+      stockAtOrder: h.stock_at_order,
+      price: productMap[h.product_id]?.price || 0,
+    }));
+
+    DATA.stocktakingHistory = (shRes.data || []).map(h => ({
+      id: h.id,
+      productId: h.product_id,
+      date: h.stocktaking_date,
+      quantity: h.quantity,
+      previousQuantity: h.previous_quantity,
+    }));
+
+    if (DATA.vendors.length > 0 && !currentVendorId) {
+      currentVendorId = DATA.vendors[0].id;
+    } else if (DATA.vendors.length > 0 && !DATA.vendors.find(v => v.id === currentVendorId)) {
+      currentVendorId = DATA.vendors[0].id;
+    }
+
+    saveData(DATA);
+    isOnline = true;
+    updateOnlineStatus();
+  } catch(e) {
+    console.warn('Supabase load failed, using cache:', e);
+    // Use cache (DATA is already set from loadDataFromCache on page load)
+    if (e && e.status !== 401) {
+      isOnline = false;
+      updateOnlineStatus();
+    }
+  }
+}
+
+// ============================
+// Init (Auth + Data)
+// ============================
+async function init() {
+  sbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  window.addEventListener('online', () => {
+    isOnline = true;
+    updateOnlineStatus();
+    showToast('オンライン');
+  });
+  window.addEventListener('offline', () => {
+    isOnline = false;
+    updateOnlineStatus();
+    showToast('オフライン - キャッシュ使用中');
+  });
+
+  updateOnlineStatus();
+
+  // Check current session
+  const { data: { session } } = await sbClient.auth.getSession();
+
+  if (session) {
+    currentUser = session.user;
+    document.getElementById('loginOverlay').style.display = 'none';
+
+    // Show cached data immediately (stale-while-revalidate)
+    const cached = loadDataFromCache();
+    if (cached && cached.products && cached.products.length > 0) {
+      DATA = cached;
+      currentVendorId = DATA.vendors[0]?.id || '';
+      render();
+    }
+
+    // Save local backup before Supabase load overwrites it
+    const localSnapshot = loadDataFromCache();
+    if (localSnapshot && (localSnapshot.vendors?.length > 0 || localSnapshot.products?.length > 0)) {
+      try { localStorage.setItem('inventory_app_local_backup', JSON.stringify(localSnapshot)); } catch(e) {}
+    }
+
+    // Load fresh data from Supabase
+    await loadDataFromSupabase();
+    setupRealtime();
+    render();
+  } else {
+    showLoginForm();
+  }
+
+  // Listen for future auth changes
+  sbClient.auth.onAuthStateChange(async (event, session) => {
+    if (event === 'SIGNED_IN' && session) {
+      currentUser = session.user;
+      document.getElementById('loginOverlay').style.display = 'none';
+      // Save local backup before DATA is overwritten by Supabase load
+      const localSnapshot = loadDataFromCache();
+      if (localSnapshot && (localSnapshot.vendors?.length > 0 || localSnapshot.products?.length > 0)) {
+        try { localStorage.setItem('inventory_app_local_backup', JSON.stringify(localSnapshot)); } catch(e) {}
+      }
+      await loadDataFromSupabase();
+      setupRealtime();
+      if (DATA.vendors.length > 0) currentVendorId = DATA.vendors[0].id;
+      render();
+    } else if (event === 'SIGNED_OUT') {
+      currentUser = null;
+      DATA = getDefaultData();
+      if (realtimeChannel) { sbClient.removeChannel(realtimeChannel); realtimeChannel = null; }
+      showLoginForm();
+    }
+  });
+
+  // Auto-reconnect every 30s when offline
+  setInterval(async () => {
+    if (!isOnline && sbClient && currentUser) {
+      try {
+        await loadDataFromSupabase();
+        if (isOnline) { setupRealtime(); render(); showToast('オンライン復帰'); }
+      } catch(e) {}
+    }
+  }, 30000);
 }
 
 // ============================
@@ -670,15 +985,31 @@ function renderStockView(el) {
     return;
   }
 
-  el.innerHTML = products.map(p => {
+  // UX-1: 全チェックボタン
+  const allChecked = products.every(p => !!sessionStorage.getItem('stk_' + p.id));
+  let html = `<div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+    <button onclick="checkAllStocktaking()" style="background:var(--surface2);border:1.5px solid rgba(108,99,255,0.2);border-radius:8px;color:var(--text-sub);font-size:12px;font-weight:600;padding:6px 12px;cursor:pointer;">${allChecked ? '全解除' : '全チェック'}</button>
+  </div>`;
+
+  html += products.map(p => {
     const stock = pendingChanges[p.id] !== undefined ? pendingChanges[p.id] : p.stock;
     const changed = pendingChanges[p.id] !== undefined && pendingChanges[p.id] !== p.stock;
     const isZero = stock === 0;
     const daily = (p.monthlyConsumption || 0) * (p.seasonalFactor || 1) / 30;
     const avgInfo = daily > 0 ? `月${(p.monthlyConsumption || 0).toFixed(1)}個` : '';
+    // UX-1: チェック状態
+    const isChecked = !!sessionStorage.getItem('stk_' + p.id);
+    // UX-2: 前回棚卸し数量
+    const lastStk = (DATA.stocktakingHistory || [])
+      .filter(h => h.productId === p.id)
+      .sort((a,b) => new Date(b.date) - new Date(a.date))[0];
+    const prevHint = lastStk ? `前回: ${lastStk.quantity}` : '';
     return `
-      <div class="card${changed ? ' changed' : ''}${isZero ? ' zero' : ''}" id="card-${p.id}">
-        <div class="card-left" onclick="openProductEdit('${p.id}')" style="cursor:pointer;">
+      <div class="card${changed ? ' changed' : ''}${isZero ? ' zero' : ''}${isChecked ? ' stk-checked' : ''}" id="card-${p.id}">
+        <div class="stk-check" id="stkbox-${p.id}" onclick="toggleStocktakeCheck('${p.id}',event)">
+          ${isChecked ? '<svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 7l3 3 7-7" stroke="#51cf66" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>' : ''}
+        </div>
+        <div class="card-left" onclick="openProductEdit('${p.id}')" style="cursor:pointer;margin-left:8px;">
           <div class="product-name">${esc(p.name)}</div>
           <div class="product-meta">
             <span class="product-stock">在庫: ${stock}</span>
@@ -688,11 +1019,16 @@ function renderStockView(el) {
         </div>
         <div class="qty-ctrl">
           <button class="qty-btn minus" onclick="changeStock('${p.id}',-1)">−</button>
-          <div class="qty-val" id="qty-${p.id}">${stock}</div>
+          <div style="display:flex;flex-direction:column;align-items:center;width:48px;">
+            <div class="qty-val" id="qty-${p.id}">${stock}</div>
+            <div class="prev-qty-hint" id="prevhint-${p.id}">${prevHint}</div>
+          </div>
           <button class="qty-btn plus" onclick="changeStock('${p.id}',1)">+</button>
         </div>
       </div>`;
   }).join('');
+
+  el.innerHTML = html;
 }
 
 function renderOrderView(el) {
@@ -922,10 +1258,16 @@ function deleteHistoryByDate(dateStr) {
   const items = DATA.orderHistory.filter(h => new Date(h.date).toLocaleDateString('ja-JP') === dateStr);
   if (!confirm(`${dateStr}の${items.length}件をまとめて削除しますか？`)) return;
   lastDeleted = items.map(h => ({ ...h }));
+  const ids = items.map(h => h.id);
   DATA.orderHistory = DATA.orderHistory.filter(h => new Date(h.date).toLocaleDateString('ja-JP') !== dateStr);
   saveData(DATA);
   renderContent();
   showUndoToast();
+  // Supabase sync (fire-and-forget)
+  if (sbClient && isOnline && ids.length > 0) {
+    sbClient.from('order_history').delete().in('id', ids).eq('tenant_id', TENANT_ID)
+      .then(({ error }) => { if (error) console.error('deleteHistoryByDate失敗:', error); });
+  }
 }
 
 function deleteHistory(id) {
@@ -937,6 +1279,11 @@ function deleteHistory(id) {
   saveData(DATA);
   renderContent();
   showUndoToast();
+  // Supabase sync (fire-and-forget)
+  if (sbClient && isOnline) {
+    sbClient.from('order_history').delete().eq('id', id).eq('tenant_id', TENANT_ID)
+      .then(({ error }) => { if (error) console.error('deleteHistory失敗:', error); });
+  }
 }
 
 function showUndoToast() {
@@ -1067,13 +1414,13 @@ function changeStock(productId, delta) {
   renderBottomBar();
 }
 
-function saveStockChanges() {
+async function saveStockChanges() {
   const now = new Date().toISOString();
+  const stockUpdates = [];
   for (const [productId, newStock] of Object.entries(pendingChanges)) {
     const p = DATA.products.find(x => x.id === productId);
     if (!p || newStock === p.stock) continue;
-
-    // Record stocktaking history
+    stockUpdates.push({ productId, newStock, prevStock: p.stock });
     DATA.stocktakingHistory.push({
       id: uid(),
       productId: productId,
@@ -1081,13 +1428,27 @@ function saveStockChanges() {
       quantity: newStock,
       previousQuantity: p.stock,
     });
-
     p.stock = newStock;
   }
   pendingChanges = {};
   saveData(DATA);
   showToast('保存しました');
   render();
+
+  // Supabase: call update_stock RPC for each changed product
+  if (sbClient && isOnline) {
+    for (const { productId, newStock } of stockUpdates) {
+      try {
+        const { error } = await sbClient.rpc('update_stock', {
+          p_product_id: productId,
+          p_new_quantity: newStock,
+        });
+        if (error) throw error;
+      } catch(e) {
+        console.error('update_stock失敗:', e);
+      }
+    }
+  }
 }
 
 function generateOrderRecommendations() {
@@ -1125,25 +1486,58 @@ function openProductEdit(id) {
   openModal('editProduct');
 }
 
-function saveProductEdit() {
+async function saveProductEdit() {
   const id = document.getElementById('editProductId').value;
   const p = DATA.products.find(x => x.id === id);
   if (!p) return;
-  p.minStock = parseInt(document.getElementById('editMinStock').value) || 0;
-  p.price = parseInt(document.getElementById('editPrice').value) || 0;
-  p.monthlyConsumption = parseFloat(document.getElementById('editMonthly').value) || 0;
-  p.seasonalFactor = parseFloat(document.getElementById('editSeasonal').value) || 1;
+
+  const minStock = parseInt(document.getElementById('editMinStock').value) || 0;
+  const price = parseInt(document.getElementById('editPrice').value) || 0;
+  const monthly = parseFloat(document.getElementById('editMonthly').value) || 0;
+  const seasonal = parseFloat(document.getElementById('editSeasonal').value) || 1;
+
+  // Update Supabase
+  if (sbClient && isOnline) {
+    try {
+      await Promise.all([
+        sbClient.from('products').update({ price }).eq('id', id).eq('tenant_id', TENANT_ID),
+        sbClient.from('inventory').update({
+          ideal_stock: minStock,
+          monthly_consumption: monthly,
+          seasonal_factor: seasonal,
+        }).eq('product_id', id).eq('tenant_id', TENANT_ID),
+      ]);
+    } catch(e) {
+      console.error('saveProductEdit失敗:', e);
+    }
+  }
+
+  p.minStock = minStock;
+  p.price = price;
+  p.monthlyConsumption = monthly;
+  p.seasonalFactor = seasonal;
   saveData(DATA);
   closeModal('editProduct');
   showToast('保存しました');
   render();
 }
 
-function deleteProduct() {
+async function deleteProduct() {
   const id = document.getElementById('editProductId').value;
   const p = DATA.products.find(x => x.id === id);
   if (!p) return;
   if (!confirm(`「${p.name}」を削除しますか？`)) return;
+
+  // Update Supabase
+  if (sbClient && isOnline) {
+    try {
+      const { error } = await sbClient.from('products').update({ is_active: false }).eq('id', id).eq('tenant_id', TENANT_ID);
+      if (error) throw error;
+    } catch(e) {
+      console.error('deleteProduct失敗:', e);
+    }
+  }
+
   p.active = false;
   saveData(DATA);
   closeModal('editProduct');
@@ -1211,7 +1605,7 @@ function changeManualQty(productId, delta) {
   if (el) el.textContent = newVal;
 }
 
-function saveManualHistory() {
+async function saveManualHistory() {
   const entries = Object.entries(manualHistoryItems).filter(([,q]) => q > 0);
   if (entries.length === 0) {
     showToast('数量を入力してください');
@@ -1220,37 +1614,55 @@ function saveManualHistory() {
 
   const dateVal = document.getElementById('histDate').value;
   const orderDate = dateVal ? new Date(dateVal + 'T12:00:00').toISOString() : new Date().toISOString();
-  const orderDateStr = new Date(orderDate).toLocaleDateString('ja-JP');
+  const newEntries = [];
+
   entries.forEach(([productId, quantity]) => {
     const p = DATA.products.find(x => x.id === productId);
     if (!p) return;
-    // 同日に同商品の既存エントリがあれば数量を加算して統合する
-    const existing = DATA.orderHistory.find(h =>
-      h.productId === productId &&
-      new Date(h.date).toLocaleDateString('ja-JP') === orderDateStr
-    );
-    if (existing) {
-      existing.quantity += quantity;
-    } else {
-      DATA.orderHistory.push({
-        id: uid(),
-        productId,
-        vendorId: p.vendorId,
-        productName: p.name,
-        vendorName: DATA.vendors.find(v => v.id === p.vendorId)?.name || '',
-        date: orderDate,
-        quantity,
-        stockAtOrder: p.stock,
-        price: p.price || 0,
-      });
-    }
+    newEntries.push({
+      id: uid(),
+      productId,
+      vendorId: p.vendorId,
+      productName: p.name,
+      vendorName: DATA.vendors.find(v => v.id === p.vendorId)?.name || '',
+      date: orderDate,
+      quantity,
+      stockAtOrder: p.stock,
+      price: p.price || 0,
+    });
   });
 
+  // Add to local DATA (simple, no merge)
+  newEntries.forEach(entry => DATA.orderHistory.push(entry));
   saveData(DATA);
   manualHistoryItems = {};
   closeModal('addHistory');
   showToast(`${entries.length}件の履歴を追加しました`);
   render();
+
+  // Supabase sync (fire-and-forget)
+  if (sbClient && isOnline) {
+    for (const entry of newEntries) {
+      try {
+        const { data, error } = await sbClient.from('order_history').insert({
+          tenant_id: TENANT_ID,
+          product_id: entry.productId,
+          vendor_id: entry.vendorId,
+          order_date: entry.date,
+          quantity: entry.quantity,
+          stock_at_order: entry.stockAtOrder,
+        }).select('id').single();
+        // Update the entry ID with the real Supabase UUID for future deletions
+        if (data && !error) {
+          const localEntry = DATA.orderHistory.find(h => h.id === entry.id);
+          if (localEntry) localEntry.id = data.id;
+        }
+      } catch(e) {
+        console.error('manual history insert失敗:', e);
+      }
+    }
+    saveData(DATA); // Save with updated IDs
+  }
 }
 
 function changeCartQty(index, delta) {
@@ -1264,7 +1676,7 @@ function removeFromCart(index) {
   render();
 }
 
-function confirmOrder() {
+async function confirmOrder() {
   // Confirm only items for selected vendors
   const targetItems = orderCart.filter(item => {
     if (!selectedOrderVendorIds) return true;
@@ -1280,7 +1692,7 @@ function confirmOrder() {
   targetItems.forEach(item => {
     const p = DATA.products.find(x => x.id === item.productId);
     if (!p) return;
-    // 同日に同商品の既存エントリがあれば数量を加算して統合する
+    // 同日に同商品の既存エントリがあれば数量を加算
     const existing = DATA.orderHistory.find(h =>
       h.productId === item.productId &&
       new Date(h.date).toLocaleDateString('ja-JP') === todayStr
@@ -1318,6 +1730,28 @@ function confirmOrder() {
   }
   saveData(DATA);
   showChecklist(checklistItems);
+
+  // Supabase: confirm_order RPC
+  if (sbClient && isOnline) {
+    try {
+      const rpcItems = targetItems.map(item => {
+        const p = DATA.products.find(x => x.id === item.productId);
+        return {
+          product_id: item.productId,
+          vendor_id: p?.vendorId || '',
+          quantity: item.quantity,
+          stock_at_order: p?.stock ?? 0,
+        };
+      });
+      const { error } = await sbClient.rpc('confirm_order', {
+        p_tenant_id: TENANT_ID,
+        p_items: JSON.stringify(rpcItems),
+      });
+      if (error) console.error('confirm_order失敗:', error);
+    } catch(e) {
+      console.error('confirm_order失敗:', e);
+    }
+  }
 }
 
 function showChecklist(items) {
@@ -1410,7 +1844,6 @@ function shareOrder() {
       text: text,
     }).catch(() => {});
   } else {
-    // PCなどshare非対応の場合はコピーにフォールバック
     copyOrderText();
   }
 }
@@ -1440,7 +1873,7 @@ function copyOrderText() {
 // Product Management
 // ============================
 
-function addProduct() {
+async function addProduct() {
   const vendorId = document.getElementById('addVendor').value;
   const name = document.getElementById('addName').value.trim();
   const stock = parseInt(document.getElementById('addStock').value) || 0;
@@ -1455,15 +1888,45 @@ function addProduct() {
   if (exists) { showToast('同じ商品名が既にあります'); return; }
 
   const maxSort = Math.max(0, ...DATA.products.filter(p => p.vendorId === vendorId).map(p => p.sortOrder || 0));
+  let newId = uid();
+
+  if (sbClient && isOnline) {
+    try {
+      const { data: productData, error: pErr } = await sbClient.from('products').insert({
+        tenant_id: TENANT_ID,
+        vendor_id: vendorId,
+        name,
+        price: 0,
+        sort_order: maxSort + 10,
+        is_active: true,
+      }).select('id').single();
+      if (pErr) throw pErr;
+      newId = productData.id;
+
+      const { error: iErr } = await sbClient.from('inventory').insert({
+        tenant_id: TENANT_ID,
+        product_id: newId,
+        current_stock: stock,
+        ideal_stock: minStock,
+      });
+      if (iErr) throw iErr;
+    } catch(e) {
+      showToast('追加に失敗しました: ' + (e.message || e));
+      return;
+    }
+  }
 
   DATA.products.push({
-    id: uid(),
-    vendorId: vendorId,
-    name: name,
-    stock: stock,
-    minStock: minStock,
+    id: newId,
+    vendorId,
+    name,
+    stock,
+    minStock,
     sortOrder: maxSort + 10,
     active: true,
+    price: 0,
+    monthlyConsumption: 0,
+    seasonalFactor: 1,
   });
 
   saveData(DATA);
@@ -1480,7 +1943,7 @@ function addProduct() {
 // Vendor Management
 // ============================
 
-function addVendorPrompt() {
+async function addVendorPrompt() {
   const name = prompt('仕入れ先の名前を入力:');
   if (!name || !name.trim()) return;
   const trimmed = name.trim();
@@ -1489,19 +1952,33 @@ function addVendorPrompt() {
     return;
   }
   const maxSort = Math.max(0, ...DATA.vendors.map(v => v.sortOrder));
-  DATA.vendors.push({
-    id: uid(),
-    name: trimmed,
-    shortName: trimmed.length > 5 ? trimmed.substring(0, 5) : trimmed,
-    sortOrder: maxSort + 1,
-  });
+  const shortName = trimmed.length > 5 ? trimmed.substring(0, 5) : trimmed;
+  let newId = uid();
+
+  if (sbClient && isOnline) {
+    try {
+      const { data, error } = await sbClient.from('vendors').insert({
+        tenant_id: TENANT_ID,
+        name: trimmed,
+        short_name: shortName,
+        sort_order: maxSort + 1,
+        is_active: true,
+      }).select('id').single();
+      if (error) throw error;
+      newId = data.id;
+    } catch(e) {
+      console.error('addVendor失敗:', e);
+    }
+  }
+
+  DATA.vendors.push({ id: newId, name: trimmed, shortName, sortOrder: maxSort + 1 });
   saveData(DATA);
   showToast('追加しました');
   renderSettingsVendors();
   render();
 }
 
-function deleteVendor(id) {
+async function deleteVendor(id) {
   const v = DATA.vendors.find(x => x.id === id);
   if (!v) return;
   const productCount = DATA.products.filter(p => p.vendorId === id && p.active !== false).length;
@@ -1509,6 +1986,17 @@ function deleteVendor(id) {
     ? `「${v.name}」を削除すると、${productCount}件の商品も削除されます。よろしいですか？`
     : `「${v.name}」を削除しますか？`;
   if (!confirm(msg)) return;
+
+  if (sbClient && isOnline) {
+    try {
+      await sbClient.from('vendors').update({ is_active: false }).eq('id', id).eq('tenant_id', TENANT_ID);
+      if (productCount > 0) {
+        await sbClient.from('products').update({ is_active: false }).eq('vendor_id', id).eq('tenant_id', TENANT_ID);
+      }
+    } catch(e) {
+      console.error('deleteVendor失敗:', e);
+    }
+  }
 
   DATA.vendors = DATA.vendors.filter(x => x.id !== id);
   DATA.products.forEach(p => { if (p.vendorId === id) p.active = false; });
@@ -1584,7 +2072,7 @@ function confirmClearData() {
   if (!confirm('本当に削除しますか？')) return;
   DATA = getDefaultData();
   saveData(DATA);
-  currentVendorId = DATA.vendors[0]?.id || '';
+  currentVendorId = '';
   orderCart = [];
   pendingChanges = {};
   showToast('全データを削除しました');
@@ -1642,20 +2130,70 @@ function showToast(msg) {
 }
 
 // ============================
+// UX-1: 棚卸しチェック済みマーカー
+// ============================
+function toggleStocktakeCheck(productId, e) {
+  e.stopPropagation();
+  const key = 'stk_' + productId;
+  const wasChecked = !!sessionStorage.getItem(key);
+  if (wasChecked) {
+    sessionStorage.removeItem(key);
+  } else {
+    sessionStorage.setItem(key, '1');
+  }
+  const card = document.getElementById('card-' + productId);
+  const box = document.getElementById('stkbox-' + productId);
+  if (card) card.classList.toggle('stk-checked', !wasChecked);
+  if (box) {
+    box.innerHTML = !wasChecked
+      ? '<svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 7l3 3 7-7" stroke="#51cf66" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>'
+      : '';
+  }
+  // 全チェックボタンのラベルを更新
+  const products = DATA.products.filter(p => p.vendorId === currentVendorId && p.active !== false);
+  const allChecked = products.every(p => !!sessionStorage.getItem('stk_' + p.id));
+  const allBtn = document.querySelector('[onclick="checkAllStocktaking()"]');
+  if (allBtn) allBtn.textContent = allChecked ? '全解除' : '全チェック';
+}
+
+function checkAllStocktaking() {
+  const products = DATA.products.filter(p => p.vendorId === currentVendorId && p.active !== false);
+  const allChecked = products.every(p => !!sessionStorage.getItem('stk_' + p.id));
+  products.forEach(p => {
+    const key = 'stk_' + p.id;
+    if (allChecked) {
+      sessionStorage.removeItem(key);
+    } else {
+      sessionStorage.setItem(key, '1');
+    }
+    const card = document.getElementById('card-' + p.id);
+    const box = document.getElementById('stkbox-' + p.id);
+    if (card) card.classList.toggle('stk-checked', !allChecked);
+    if (box) {
+      box.innerHTML = !allChecked
+        ? '<svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 7l3 3 7-7" stroke="#51cf66" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>'
+        : '';
+    }
+  });
+  const allBtn = document.querySelector('[onclick="checkAllStocktaking()"]');
+  if (allBtn) allBtn.textContent = allChecked ? '全チェック' : '全解除';
+}
+
+// ============================
 // 仕入先A 並び順管理
 // ============================
 function tokyoRibiyoSortKey(name) {
   const n = name.trim();
 
-  // 1. ヘアマニキュア系（L-B, M-B, D-B, L-N, M-N, D-N, M-AB, Black, S.Gray, Clear, P-N）
+  // 1. ヘアマニキュア系
   const maniOrder = ['L-B','M-B','D-B','L-N','M-N','D-N','M-AB','Black','S.Gray','Clear','P-N'];
   const mi = maniOrder.findIndex(s => n === s);
   if (mi >= 0) return 100000 + mi * 10;
 
-  // 2. パーマ剤（コスメ系、プリズムプラス、アフターローション）
+  // 2. パーマ剤
   if (n.includes('コスメ') || n.includes('プリズムプラス') || n === 'アフターローション') return 200000;
 
-  // 3. カラー剤（数字+色名: 14ナチュラル, 8マット等）
+  // 3. カラー剤（数字+色名）
   const colorOrder = ['ナチュラル','マット','アッシュ','グレイ','バイオレット','ピンク','レッド','オレンジ'];
   const ci = colorOrder.findIndex(c => n.includes(c));
   if (ci >= 0) {
@@ -1666,7 +2204,7 @@ function tokyoRibiyoSortKey(name) {
     return 300000 + ci * 1000 + (ni >= 0 ? ni * 10 : 990);
   }
 
-  // 4. アルファベット系（N10, M8, A8, G8, V8, P8, OR8, R8等）
+  // 4. アルファベット系
   const alphaOrder = ['N','M','A','G','V','P','OR','R'];
   for (let ai = 0; ai < alphaOrder.length; ai++) {
     const regex = new RegExp('^' + alphaOrder[ai] + '\\d+$');
@@ -1700,7 +2238,6 @@ function tokyoRibiyoSortKey(name) {
 }
 
 function applyTokyoRibiyoSortOrder() {
-  // 対象仕入先を商品名パターンで自動検出
   const vendor = DATA.vendors.find(v => {
     const prods = DATA.products.filter(p => p.vendorId === v.id && p.active !== false);
     return prods.some(p => p.name && (p.name.includes('ナチュラル') || p.name.includes('conc.') || p.name.includes('クオライン') || p.name.includes('ティアーズ')));
@@ -1731,13 +2268,104 @@ function forceUpdate() {
 }
 
 // ============================
-// Init
+// Realtime Subscriptions
 // ============================
-if (DATA.products.length === 0) {
-  showWelcome();
-} else {
-  render();
+let realtimeChannel = null;
+
+function setupRealtime() {
+  if (!sbClient || !currentUser) return;
+  if (realtimeChannel) sbClient.removeChannel(realtimeChannel);
+  let reloadTimer = null;
+  const scheduleReload = () => {
+    clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => {
+      loadDataFromSupabase().then(() => render());
+    }, 800);
+  };
+  realtimeChannel = sbClient.channel('inventory_changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'vendors' }, scheduleReload)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, scheduleReload)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, scheduleReload)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'order_history' }, scheduleReload)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'stocktaking_history' }, scheduleReload)
+    .subscribe();
 }
+
+// ============================
+// Migration: localStorage → Supabase
+// ============================
+async function migrateFromLocalStorage() {
+  const raw = localStorage.getItem('inventory_app_local_backup') || localStorage.getItem('inventory_app');
+  if (!raw) {
+    showToast('移行するローカルデータがありません');
+    return;
+  }
+  let localData;
+  try { localData = JSON.parse(raw); } catch(e) { showToast('データ読み込み失敗'); return; }
+  const activeProducts = (localData.products || []).filter(p => p.active !== false);
+  if ((localData.vendors || []).length === 0 && activeProducts.length === 0) {
+    showToast('移行するデータがありません');
+    return;
+  }
+  if (!confirm(`仕入先${(localData.vendors||[]).length}件・商品${activeProducts.length}件をSupabaseへ移行します。\n※既にSupabase上にデータがある場合は重複する可能性があります。`)) return;
+
+  closeModal('settings');
+
+  try {
+    let done = 0;
+    const total = (localData.vendors || []).length + activeProducts.length;
+
+    const vendorMap = {};
+    for (const v of (localData.vendors || [])) {
+      const { data, error } = await sbClient.from('vendors').insert({
+        tenant_id: TENANT_ID, name: v.name, short_name: v.shortName || null,
+        sort_order: v.sortOrder || 0, is_active: true,
+      }).select('id').single();
+      if (!error && data) {
+        vendorMap[v.id] = data.id;
+      } else {
+        const { data: ex } = await sbClient.from('vendors').select('id')
+          .eq('tenant_id', TENANT_ID).eq('name', v.name).maybeSingle();
+        if (ex) vendorMap[v.id] = ex.id;
+      }
+      done++;
+      showToast(`移行中...${done}/${total}件`);
+    }
+
+    for (const p of activeProducts) {
+      const { data: pd, error: pe } = await sbClient.from('products').insert({
+        tenant_id: TENANT_ID,
+        vendor_id: vendorMap[p.vendorId] || p.vendorId,
+        name: p.name, price: p.price || 0,
+        sort_order: p.sortOrder || 0, is_active: true,
+      }).select('id').single();
+      if (!pe && pd) {
+        await sbClient.from('inventory').insert({
+          tenant_id: TENANT_ID, product_id: pd.id,
+          current_stock: typeof p.stock === 'number' ? p.stock : 0,
+          ideal_stock: p.minStock || 0,
+          monthly_consumption: p.monthlyConsumption || 0,
+          seasonal_factor: p.seasonalFactor || 1.0,
+          avg_order_quantity: 0,
+        });
+      }
+      done++;
+      showToast(`移行中...${done}/${total}件`);
+    }
+
+    await loadDataFromSupabase();
+    render();
+    showToast('移行完了！');
+  } catch(e) {
+    console.error('移行エラー:', e);
+    showToast('移行エラー: ' + (e.message || ''));
+  }
+}
+
+// ============================
+// Start
+// ============================
+init();
 </script>
 </body>
 </html>
