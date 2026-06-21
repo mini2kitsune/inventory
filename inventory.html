@@ -1303,6 +1303,16 @@ function renderHistoryView(el) {
 }
 
 let lastDeleted = null;
+let _pendingDeleteTimer = null;
+let _pendingDeleteFn = null;
+
+function _schedulePendingDelete(fn) {
+  clearTimeout(_pendingDeleteTimer);
+  _pendingDeleteFn = fn;
+  _pendingDeleteTimer = setTimeout(() => {
+    if (_pendingDeleteFn) { _pendingDeleteFn(); _pendingDeleteFn = null; }
+  }, 5000);
+}
 
 function deleteHistoryByDate(dateStr) {
   const items = DATA.orderHistory.filter(h => new Date(h.date).toLocaleDateString('ja-JP') === dateStr);
@@ -1313,11 +1323,12 @@ function deleteHistoryByDate(dateStr) {
   saveData(DATA);
   renderContent();
   showUndoToast();
-  // Supabase sync (fire-and-forget)
-  if (sbClient && isOnline && ids.length > 0) {
-    sbClient.from('order_history').delete().in('id', ids).eq('tenant_id', TENANT_ID)
-      .then(({ error }) => { if (error) console.error('deleteHistoryByDate失敗:', error); });
-  }
+  _schedulePendingDelete(() => {
+    if (sbClient && isOnline && ids.length > 0) {
+      sbClient.from('order_history').delete().in('id', ids).eq('tenant_id', TENANT_ID)
+        .then(({ error }) => { if (error) console.error('deleteHistoryByDate失敗:', error); });
+    }
+  });
 }
 
 function deleteHistory(id) {
@@ -1329,11 +1340,12 @@ function deleteHistory(id) {
   saveData(DATA);
   renderContent();
   showUndoToast();
-  // Supabase sync (fire-and-forget)
-  if (sbClient && isOnline) {
-    sbClient.from('order_history').delete().eq('id', id).eq('tenant_id', TENANT_ID)
-      .then(({ error }) => { if (error) console.error('deleteHistory失敗:', error); });
-  }
+  _schedulePendingDelete(() => {
+    if (sbClient && isOnline) {
+      sbClient.from('order_history').delete().eq('id', id).eq('tenant_id', TENANT_ID)
+        .then(({ error }) => { if (error) console.error('deleteHistory失敗:', error); });
+    }
+  });
 }
 
 function showUndoToast() {
@@ -1349,6 +1361,8 @@ function showUndoToast() {
 
 function undoDelete() {
   if (!lastDeleted) return;
+  clearTimeout(_pendingDeleteTimer);
+  _pendingDeleteFn = null;
   if (Array.isArray(lastDeleted)) {
     DATA.orderHistory.push(...lastDeleted);
   } else {
