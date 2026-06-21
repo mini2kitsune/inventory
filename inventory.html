@@ -590,6 +590,13 @@
     </div>
     <div class="settings-section">
       <h3>アカウント</h3>
+      <div id="setPasswordForm" style="margin-bottom:12px;">
+        <div style="font-size:13px;color:var(--text-sub);margin-bottom:8px;">パスワードを設定・変更</div>
+        <input id="newPassword" type="password" placeholder="新しいパスワード（6文字以上）" class="form-input" style="margin-bottom:6px;">
+        <input id="newPassword2" type="password" placeholder="確認用（もう一度入力）" class="form-input" style="margin-bottom:6px;">
+        <button class="action-btn" style="font-size:13px;padding:8px;" onclick="setNewPassword()">パスワードを保存</button>
+        <div id="setPasswordMsg" style="font-size:12px;margin-top:6px;min-height:16px;"></div>
+      </div>
       <div class="settings-item" onclick="doLogout()">
         <span class="settings-item-label settings-danger">ログアウト</span>
       </div>
@@ -784,6 +791,23 @@ async function doMagicLink() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'パスワードなしでメールリンクでログイン';
+  }
+}
+
+async function setNewPassword() {
+  const pw1 = document.getElementById('newPassword').value;
+  const pw2 = document.getElementById('newPassword2').value;
+  const msg = document.getElementById('setPasswordMsg');
+  if (!pw1 || pw1.length < 6) { msg.style.color = 'var(--danger)'; msg.textContent = '6文字以上で入力してください'; return; }
+  if (pw1 !== pw2) { msg.style.color = 'var(--danger)'; msg.textContent = 'パスワードが一致しません'; return; }
+  msg.style.color = 'var(--text-sub)'; msg.textContent = '保存中...';
+  const { error } = await sbClient.auth.updateUser({ password: pw1 });
+  if (error) {
+    msg.style.color = 'var(--danger)'; msg.textContent = error.message;
+  } else {
+    msg.style.color = 'var(--success)'; msg.textContent = 'パスワードを保存しました';
+    document.getElementById('newPassword').value = '';
+    document.getElementById('newPassword2').value = '';
   }
 }
 
