@@ -1771,7 +1771,7 @@ async function confirmOrder() {
       });
       const { error } = await sbClient.rpc('confirm_order', {
         p_tenant_id: TENANT_ID,
-        p_items: JSON.stringify(rpcItems),
+        p_items: rpcItems,
       });
       if (error) console.error('confirm_order失敗:', error);
     } catch(e) {
