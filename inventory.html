@@ -636,6 +636,9 @@
     </div>
     <div id="loginError" style="color:var(--danger);font-size:13px;margin-bottom:12px;text-align:center;min-height:18px;"></div>
     <button id="loginBtn" class="action-btn" onclick="doAuthAction()">ログイン</button>
+    <div id="signinOnly" style="margin-top:12px;text-align:center;">
+      <button id="magicLinkBtn" style="background:none;border:none;color:var(--primary);font-size:13px;cursor:pointer;text-decoration:underline;" onclick="doMagicLink()">パスワードなしでメールリンクでログイン</button>
+    </div>
   </div>
 </div>
 
@@ -711,6 +714,7 @@ function switchAuthTab(mode) {
   document.getElementById('tabSignUp').style.color = isSignUp ? '#fff' : 'var(--text-sub)';
   document.getElementById('loginBtn').textContent = isSignUp ? '新規登録' : 'ログイン';
   document.getElementById('loginError').textContent = '';
+  document.getElementById('signinOnly').style.display = isSignUp ? 'none' : 'block';
 }
 
 function showLoginForm() {
@@ -758,6 +762,28 @@ async function doAuthAction() {
     errEl.textContent = msg;
     btn.disabled = false;
     btn.textContent = authMode === 'signup' ? '新規登録' : 'ログイン';
+  }
+}
+
+async function doMagicLink() {
+  const email = (document.getElementById('loginEmail').value || '').trim();
+  const errEl = document.getElementById('loginError');
+  const btn = document.getElementById('magicLinkBtn');
+  if (!email) { errEl.textContent = 'メールアドレスを入力してください'; return; }
+  btn.disabled = true;
+  btn.textContent = '送信中...';
+  errEl.textContent = '';
+  try {
+    const { error } = await sbClient.auth.signInWithOtp({ email, options: { emailRedirectTo: 'https://mini2kitsune.github.io/inventory/inventory.html' } });
+    if (error) throw error;
+    errEl.style.color = 'var(--success)';
+    errEl.textContent = 'ログインリンクをメールに送りました。メールアプリで確認してください。';
+  } catch(e) {
+    errEl.style.color = 'var(--danger)';
+    errEl.textContent = e.message || '送信に失敗しました';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'パスワードなしでメールリンクでログイン';
   }
 }
 
