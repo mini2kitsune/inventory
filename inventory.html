@@ -294,6 +294,14 @@
       padding: 20px;
       overflow-y: auto;
     }
+    #modal-addHistory.show {
+      align-items: stretch;
+    }
+    #modal-addHistory .modal {
+      border-radius: 0;
+      max-height: 100dvh;
+      height: 100dvh;
+    }
     .modal h2 {
       font-size: 18px; margin-bottom: 16px;
       display: flex; justify-content: space-between; align-items: center;
@@ -545,7 +553,7 @@
     </div>
     <div class="form-group">
       <label class="form-label">商品（複数選択可）</label>
-      <div id="histProductList" style="max-height:260px;overflow-y:auto;"></div>
+      <div id="histProductList" style="flex:1;overflow-y:auto;"></div>
     </div>
     <button class="action-btn" onclick="saveManualHistory()" style="margin-top:8px">履歴に追加</button>
   </div>
