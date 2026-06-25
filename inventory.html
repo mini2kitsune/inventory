@@ -2372,6 +2372,21 @@ function tokyoRibiyoSortKey(name) {
   if (n.includes('コスメ') || n.includes('プリズムプラス')) return 200010;
   if (n === 'アフターローション') return 200020;
 
+  // 2.5. クリア系（カラー剤チェックより先に判定）
+  if (n.includes('クリア')) {
+    if (n.includes('アッシュ')) return 800010;
+    if (n.includes('ピンク'))   return 800020;
+    if (n.includes('アプリコット')) return 800030;
+    return 800000;
+  }
+
+  // 2.6. cone./conc.系（カラー剤チェックより先に判定）
+  if (n.includes('cone.') || n.includes('conc.')) {
+    if (n.includes('グレイ')) return 810010;
+    if (n.includes('ローズ')) return 810020;
+    return 810000;
+  }
+
   // 3. カラー剤（数字+色名）
   const colorOrder = ['ナチュラル','マット','アッシュ','グレイ','バイオレット','ピンク','レッド','オレンジ'];
   const ci = colorOrder.findIndex(c => n.includes(c));
@@ -2406,19 +2421,7 @@ function tokyoRibiyoSortKey(name) {
   // 7. カラーストーリー（タマリス、NB）
   if (n.includes('タマリス') || n.match(/^\d*NB$/)) return 700000;
 
-  // 8. クリア系
-  if (n.includes('クリア')) {
-    if (n.includes('アッシュ')) return 800010;
-    if (n.includes('ピンク'))   return 800020;
-    if (n.includes('アプリコット')) return 800030;
-    return 800000;
-  }
-  // cone./conc.系
-  if (n.includes('cone.') || n.includes('conc.')) {
-    if (n.includes('グレイ')) return 810010;
-    if (n.includes('ローズ')) return 810020;
-    return 810000;
-  }
+  // 8. （クリア系・cone.系は2.5/2.6で処理済み）
 
   // 9. クオライン系・アジャスト
   if (n.includes('クオライン') || n.includes('アジャスト')) return 900000;
