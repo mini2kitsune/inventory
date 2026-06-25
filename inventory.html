@@ -2369,8 +2369,8 @@ function tokyoRibiyoSortKey(name) {
   if (mi >= 0) return 100000 + mi * 10;
 
   // 2. パーマ剤
-  if (n === 'アフターローション') return 200010;
-  if (n.includes('コスメ') || n.includes('プリズムプラス')) return 200020;
+  if (n.includes('コスメ') || n.includes('プリズムプラス')) return 200010;
+  if (n === 'アフターローション') return 200020;
 
   // 3. カラー剤（数字+色名）
   const colorOrder = ['ナチュラル','マット','アッシュ','グレイ','バイオレット','ピンク','レッド','オレンジ'];
@@ -2438,13 +2438,17 @@ async function applyTokyoRibiyoSortOrder() {
   products.forEach((p, i) => { p.sortOrder = (i + 1) * 10; });
   saveData(DATA);
   if (sbClient) {
-    try {
-      for (const p of products) {
-        await sbClient.from('products').update({ sort_order: p.sortOrder }).eq('id', p.id).eq('tenant_id', TENANT_ID);
-      }
+    const results = await Promise.all(
+      products.map(p =>
+        sbClient.from('products').update({ sort_order: p.sortOrder }).eq('id', p.id).eq('tenant_id', TENANT_ID)
+      )
+    );
+    const errors = results.filter(r => r.error);
+    if (errors.length > 0) {
+      console.error('sort_order更新エラー:', errors[0].error);
+      showToast(`更新失敗: ${errors.length}件エラー（${products.length - errors.length}件成功）`);
+    } else {
       showToast('並び順を更新しました（' + products.length + '件）');
-    } catch(e) {
-      showToast('保存に失敗しました');
     }
   } else {
     showToast('並び順を更新しました（ローカルのみ）');
