@@ -2369,8 +2369,12 @@ function tokyoRibiyoSortKey(name) {
   if (mi >= 0) return 100000 + mi * 10;
 
   // 2. パーマ剤
-  if (n.includes('コスメ') || n.includes('プリズムプラス')) return 200010;
-  if (n === 'アフターローション') return 200020;
+  if (n.includes('コスメV'))        return 200010;
+  if (n.includes('コスメEX'))       return 200020;
+  if (n.includes('プリズムプラスH')) return 200030;
+  if (n.includes('プリズムプラスM')) return 200040;
+  if (n.includes('コスメ') || n.includes('プリズムプラス')) return 200050;
+  if (n === 'アフターローション')    return 200060;
 
   // 2.5. クリア系（カラー剤チェックより先に判定）
   if (n.includes('クリア')) {
