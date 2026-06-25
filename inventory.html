@@ -591,13 +591,6 @@
       </div>
     </div>
     <div class="settings-section">
-      <h3>並び順</h3>
-      <div class="settings-item" onclick="applyTokyoRibiyoSortOrder()">
-        <span class="settings-item-label" style="color:var(--accent-light)">東京理美容商会の並び順を更新</span>
-        <span class="settings-item-value">&gt;</span>
-      </div>
-    </div>
-    <div class="settings-section">
       <h3>アプリ更新</h3>
       <div class="settings-item" onclick="forceUpdate()">
         <span class="settings-item-label" style="color:var(--success)">最新版に更新</span>
@@ -692,6 +685,7 @@ let isOnline = navigator.onLine;
 // Data Layer
 // ============================
 const STORAGE_KEY = 'inventory_app';
+const SORT_ORDER_VERSION = '3'; // 変更時はインクリメント
 
 function loadDataFromCache() {
   try {
@@ -1004,6 +998,7 @@ async function loadDataFromSupabase() {
     saveData(DATA);
     isOnline = true;
     updateOnlineStatus();
+    await autoApplySortOrder();
   } catch(e) {
     console.warn('Supabase load failed, using cache:', e);
     // Use cache (DATA is already set from loadDataFromCache on page load)
@@ -2488,14 +2483,20 @@ function tokyoRibiyoSortKey(name) {
   return 999999;
 }
 
-async function applyTokyoRibiyoSortOrder() {
+async function autoApplySortOrder() {
+  if (localStorage.getItem('sort_order_version') === SORT_ORDER_VERSION) return;
+  await applyTokyoRibiyoSortOrder(true);
+  localStorage.setItem('sort_order_version', SORT_ORDER_VERSION);
+}
+
+async function applyTokyoRibiyoSortOrder(silent = false) {
   const vendor = DATA.vendors.find(v => {
     const prods = DATA.products.filter(p => p.vendorId === v.id && p.active !== false);
     return prods.some(p => p.name && (p.name.includes('ナチュラル') || p.name.includes('conc.') || p.name.includes('cone.') || p.name.includes('クオライン') || p.name.includes('ティアーズ')));
   });
-  if (!vendor) { showToast('対象の仕入先が見つかりません'); return; }
+  if (!vendor) { if (!silent) showToast('対象の仕入先が見つかりません'); return; }
   const products = DATA.products.filter(p => p.vendorId === vendor.id && p.active !== false);
-  if (products.length === 0) { showToast('商品が見つかりません'); return; }
+  if (products.length === 0) { if (!silent) showToast('商品が見つかりません'); return; }
   products.sort((a, b) => tokyoRibiyoSortKey(a.name) - tokyoRibiyoSortKey(b.name));
   products.forEach((p, i) => { p.sortOrder = (i + 1) * 10; });
   saveData(DATA);
@@ -2506,17 +2507,21 @@ async function applyTokyoRibiyoSortOrder() {
       )
     );
     const errors = results.filter(r => r.error);
-    if (errors.length > 0) {
-      console.error('sort_order更新エラー:', errors[0].error);
-      showToast(`更新失敗: ${errors.length}件エラー（${products.length - errors.length}件成功）`);
-    } else {
-      showToast('並び順を更新しました（' + products.length + '件）');
+    if (!silent) {
+      if (errors.length > 0) {
+        console.error('sort_order更新エラー:', errors[0].error);
+        showToast(`更新失敗: ${errors.length}件エラー（${products.length - errors.length}件成功）`);
+      } else {
+        showToast('並び順を更新しました（' + products.length + '件）');
+      }
+      render();
+      closeModal('settings');
     }
-  } else {
+  } else if (!silent) {
     showToast('並び順を更新しました（ローカルのみ）');
+    render();
+    closeModal('settings');
   }
-  render();
-  closeModal('settings');
 }
 
 function forceUpdate() {
