@@ -1696,7 +1696,7 @@ async function deleteProduct() {
 let manualHistoryItems = {}; // productId -> quantity
 
 function initHistoryModal() {
-  document.getElementById('modal-addHistory').scrollTop = 0;
+  document.querySelector('#modal-addHistory .modal').scrollTop = 0;
   // 今日の日付をデフォルトに
   document.getElementById('histDate').value = new Date().toISOString().slice(0, 10);
   const sel = document.getElementById('histVendor');
@@ -1785,7 +1785,7 @@ async function saveManualHistory() {
   saveData(DATA);
   manualHistoryItems = {};
   closeModal('addHistory');
-  document.getElementById('modal-addHistory').scrollTop = 0;
+  document.querySelector('#modal-addHistory .modal').scrollTop = 0;
   showToast(`${entries.length}件の履歴を追加しました`);
   render();
 
