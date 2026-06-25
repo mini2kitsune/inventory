@@ -592,6 +592,15 @@
     </div>
     <div class="settings-section">
       <h3>アカウント</h3>
+      <div class="settings-item" onclick="downloadHistoryCsvTemplate()">
+        <span class="settings-item-label" style="color:var(--accent)">📥 発注履歴CSVテンプレートをダウンロード</span>
+        <span class="settings-item-value">&gt;</span>
+      </div>
+      <div class="settings-item" onclick="document.getElementById('histCsvFile').click()">
+        <span class="settings-item-label" style="color:var(--accent)">📤 発注履歴CSVを一括インポート</span>
+        <span class="settings-item-value">&gt;</span>
+      </div>
+      <input type="file" id="histCsvFile" accept=".csv" style="display:none" onchange="importHistoryCsv(event)">
       <div id="setPasswordForm" style="margin-bottom:12px;">
         <div style="font-size:13px;color:var(--text-sub);margin-bottom:8px;">パスワードを設定・変更</div>
         <input id="newPassword" type="password" placeholder="新しいパスワード（6文字以上）" class="form-input" style="margin-bottom:6px;">
@@ -793,6 +802,87 @@ async function doMagicLink() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'パスワードなしでメールリンクでログイン';
+  }
+}
+
+function downloadHistoryCsvTemplate() {
+  const header = '発注日,仕入れ先,商品名,数量';
+  const examples = DATA.vendors.slice(0, 2).flatMap(v =>
+    DATA.products.filter(p => p.vendorId === v.id).slice(0, 2).map(p =>
+      `2026-05-31,${v.name},${p.name},1`
+    )
+  );
+  const csv = [header, ...examples].join('\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = '発注履歴インポート用.csv'; a.click();
+}
+
+async function importHistoryCsv(event) {
+  const file = event.target.files[0];
+  event.target.value = '';
+  if (!file) return;
+  const text = await file.text();
+  const lines = text.replace(/\r/g, '').split('\n').filter(l => l.trim());
+  if (lines.length < 2) { showToast('データがありません'); return; }
+
+  const newEntries = [];
+  const errors = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+    if (cols.length < 4) { errors.push(`行${i+1}: 列数不足`); continue; }
+    const [dateStr, vendorName, productName, qtyStr] = cols;
+    const qty = parseInt(qtyStr);
+    if (!dateStr || !vendorName || !productName || isNaN(qty) || qty <= 0) {
+      errors.push(`行${i+1}: データ不正`); continue;
+    }
+    const vendor = DATA.vendors.find(v => v.name === vendorName);
+    if (!vendor) { errors.push(`行${i+1}: 仕入れ先「${vendorName}」が見つかりません`); continue; }
+    const product = DATA.products.find(p => p.vendorId === vendor.id && p.name === productName);
+    if (!product) { errors.push(`行${i+1}: 商品「${productName}」が見つかりません`); continue; }
+
+    newEntries.push({
+      id: uid(),
+      productId: product.id,
+      vendorId: vendor.id,
+      productName: product.name,
+      vendorName: vendor.name,
+      date: new Date(dateStr + 'T12:00:00').toISOString(),
+      quantity: qty,
+      stockAtOrder: product.stock,
+      price: product.price || 0,
+    });
+  }
+
+  if (errors.length > 0) {
+    alert('以下の行でエラーがありました（その他は正常に取り込みます）:\n' + errors.join('\n'));
+  }
+  if (newEntries.length === 0) { showToast('取り込めるデータがありませんでした'); return; }
+
+  newEntries.forEach(e => DATA.orderHistory.push(e));
+  saveData(DATA);
+  render();
+  showToast(`${newEntries.length}件の発注履歴を取り込みました`);
+
+  if (sbClient && isOnline) {
+    for (const entry of newEntries) {
+      try {
+        const { data, error } = await sbClient.from('order_history').insert({
+          tenant_id: TENANT_ID,
+          product_id: entry.productId,
+          vendor_id: entry.vendorId,
+          order_date: entry.date,
+          quantity: entry.quantity,
+          stock_at_order: entry.stockAtOrder,
+        }).select('id').single();
+        if (data && !error) {
+          const local = DATA.orderHistory.find(h => h.id === entry.id);
+          if (local) local.id = data.id;
+        }
+      } catch(e) { console.error('CSV import insert失敗:', e); }
+    }
+    saveData(DATA);
   }
 }
 
