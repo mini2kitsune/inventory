@@ -1375,7 +1375,7 @@ function renderHistoryView(el) {
       vendorGroups[vName].push(item);
     });
     vendorOrder.forEach(vName => {
-      const vItems = vendorGroups[vName];
+      const vItems = vendorGroups[vName].sort((a,b) => new Date(a.date) - new Date(b.date));
       html += `<div style="font-size:12px;color:var(--accent-light);font-weight:700;margin:10px 0 4px;padding:4px 8px;background:rgba(108,99,255,0.1);border-radius:6px;">${esc(vName)}</div>`;
       vItems.forEach(item => {
         const subtotal = (item.price || 0) * (item.quantity || 1);
@@ -1776,19 +1776,20 @@ async function saveManualHistory() {
   }
 
   const dateVal = document.getElementById('histDate').value;
-  const orderDate = dateVal ? new Date(dateVal + 'T12:00:00').toISOString() : new Date().toISOString();
+  const baseDate = dateVal ? new Date(dateVal + 'T12:00:00') : new Date();
   const newEntries = [];
 
-  entries.forEach(([productId, quantity]) => {
+  entries.forEach(([productId, quantity], index) => {
     const p = DATA.products.find(x => x.id === productId);
     if (!p) return;
+    const entryDate = new Date(baseDate.getTime() + index * 10);
     newEntries.push({
       id: uid(),
       productId,
       vendorId: p.vendorId,
       productName: p.name,
       vendorName: DATA.vendors.find(v => v.id === p.vendorId)?.name || '',
-      date: orderDate,
+      date: entryDate.toISOString(),
       quantity,
       stockAtOrder: p.stock,
       price: p.price || 0,
