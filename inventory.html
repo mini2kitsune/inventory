@@ -526,8 +526,8 @@
 </div>
 
 <!-- 手動履歴追加モーダル -->
-<div class="modal-overlay" id="modal-addHistory" style="align-items:stretch;">
-  <div class="modal" style="max-width:100%;border-radius:0;height:100dvh;max-height:100dvh;display:flex;flex-direction:column;overflow-x:hidden;">
+<div class="modal-overlay" id="modal-addHistory" style="align-items:stretch;overflow:hidden;">
+  <div class="modal" style="max-width:100%;border-radius:0;height:100dvh;max-height:100dvh;display:flex;flex-direction:column;overflow-x:hidden;touch-action:pan-y;">
     <h2>履歴を追加 <button class="modal-close" onclick="closeModal('addHistory')">&times;</button></h2>
     <div class="form-group">
       <label class="form-label">発注日</label>
@@ -545,7 +545,7 @@
     </div>
     <div class="form-group">
       <label class="form-label">商品（複数選択可）</label>
-      <div id="histProductList" style="flex:1;overflow-y:auto;"></div>
+      <div id="histProductList" style="flex:1;overflow-y:auto;overflow-x:hidden;touch-action:pan-y;"></div>
     </div>
     <button class="action-btn" onclick="saveManualHistory()" style="margin-top:8px">履歴に追加</button>
   </div>
