@@ -1375,7 +1375,11 @@ function renderHistoryView(el) {
       vendorGroups[vName].push(item);
     });
     vendorOrder.forEach(vName => {
-      const vItems = vendorGroups[vName].sort((a,b) => new Date(a.date) - new Date(b.date));
+      const vItems = vendorGroups[vName].sort((a,b) => {
+        const pa = DATA.products.find(p => p.id === a.productId);
+        const pb = DATA.products.find(p => p.id === b.productId);
+        return (pa?.sortOrder || 0) - (pb?.sortOrder || 0);
+      });
       html += `<div style="font-size:12px;color:var(--accent-light);font-weight:700;margin:10px 0 4px;padding:4px 8px;background:rgba(108,99,255,0.1);border-radius:6px;">${esc(vName)}</div>`;
       vItems.forEach(item => {
         const subtotal = (item.price || 0) * (item.quantity || 1);
