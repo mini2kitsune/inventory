@@ -584,8 +584,11 @@
       </div>
     </div>
     <div class="settings-section">
-      <h3>非表示の商品</h3>
-      <div id="hiddenProductList"><div style="font-size:13px;color:var(--text-sub);padding:8px 0;">読み込み中...</div></div>
+      <h3>商品管理</h3>
+      <div class="settings-item" onclick="openHiddenProducts()">
+        <span class="settings-item-label">非表示の商品</span>
+        <span class="settings-item-value">&gt;</span>
+      </div>
     </div>
     <div class="settings-section">
       <h3>並び順</h3>
@@ -659,6 +662,14 @@
     <div id="signinOnly" style="margin-top:12px;text-align:center;">
       <button id="magicLinkBtn" style="background:none;border:none;color:var(--primary);font-size:13px;cursor:pointer;text-decoration:underline;" onclick="doMagicLink()">パスワードなしでメールリンクでログイン</button>
     </div>
+  </div>
+</div>
+
+<!-- 非表示商品モーダル -->
+<div class="modal-overlay" id="modal-hiddenProducts">
+  <div class="modal">
+    <h2>非表示の商品 <button class="modal-close" onclick="closeModal('hiddenProducts')">&times;</button></h2>
+    <div id="hiddenProductList"><div style="font-size:13px;color:var(--text-sub);padding:8px 0;">読み込み中...</div></div>
   </div>
 </div>
 
@@ -2207,8 +2218,14 @@ function renderSettingsVendors() {
 // Hidden Products
 // ============================
 
+async function openHiddenProducts() {
+  openModal('hiddenProducts');
+  loadHiddenProducts();
+}
+
 async function loadHiddenProducts() {
   const el = document.getElementById('hiddenProductList');
+  el.innerHTML = '<div style="font-size:13px;color:var(--text-sub);padding:8px 0;">読み込み中...</div>';
   if (!sbClient) { el.innerHTML = '<div style="font-size:13px;color:var(--text-sub);padding:8px 0;">オフライン時は表示できません</div>'; return; }
   const { data, error } = await sbClient.from('products').select('id, name, vendor_id').eq('tenant_id', TENANT_ID).eq('is_active', false).order('name');
   if (error || !data || data.length === 0) {
@@ -2221,7 +2238,7 @@ async function loadHiddenProducts() {
       <div class="settings-item" style="justify-content:space-between;">
         <div>
           <div style="font-size:14px;">${esc(p.name)}</div>
-          <div style="font-size:11px;color:var(--text-sub);">${esc(vendor?.name || '')}</div>
+          <div style="font-size:11px;color:var(--text-sub);">${esc(vendor?.shortName || vendor?.name || '')}</div>
         </div>
         <button onclick="restoreProduct('${p.id}')" style="background:rgba(81,207,102,0.15);border:none;color:var(--success);font-size:12px;font-weight:600;padding:6px 12px;border-radius:8px;cursor:pointer;white-space:nowrap;">復元</button>
       </div>`;
@@ -2310,7 +2327,6 @@ function openModal(name) {
   }
   if (name === 'settings') {
     renderSettingsVendors();
-    loadHiddenProducts();
   }
 }
 
