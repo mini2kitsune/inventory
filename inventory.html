@@ -1361,25 +1361,36 @@ function renderHistoryView(el) {
       </div></div>`;
     }
 
-    items.sort((a, b) => tokyoRibiyoSortKey(a.productName) - tokyoRibiyoSortKey(b.productName));
+    // 会社ごとにグループ化
+    const vendorGroups = {};
+    const vendorOrder = [];
     items.forEach(item => {
-      const subtotal = (item.price || 0) * (item.quantity || 1);
-      html += `
-        <div class="card" style="position:relative;">
-          <div class="card-left">
-            <div class="product-name">${esc(item.productName)}</div>
-            <div class="product-meta">
-              <span>${esc(item.vendorName)}</span>
-              <span>発注時在庫: ${item.stockAtOrder}</span>
-              ${item.price ? `<span>¥${item.price.toLocaleString()}</span>` : ''}
+      const vName = item.vendorName || '不明';
+      if (!vendorGroups[vName]) { vendorGroups[vName] = []; vendorOrder.push(vName); }
+      vendorGroups[vName].push(item);
+    });
+    vendorOrder.forEach(vName => {
+      const vItems = vendorGroups[vName];
+      vItems.sort((a, b) => tokyoRibiyoSortKey(a.productName) - tokyoRibiyoSortKey(b.productName));
+      html += `<div style="font-size:12px;color:var(--accent-light);font-weight:700;margin:10px 0 4px;padding:4px 8px;background:rgba(108,99,255,0.1);border-radius:6px;">${esc(vName)}</div>`;
+      vItems.forEach(item => {
+        const subtotal = (item.price || 0) * (item.quantity || 1);
+        html += `
+          <div class="card" style="position:relative;">
+            <div class="card-left">
+              <div class="product-name">${esc(item.productName)}</div>
+              <div class="product-meta">
+                <span>発注時在庫: ${item.stockAtOrder}</span>
+                ${item.price ? `<span>¥${item.price.toLocaleString()}</span>` : ''}
+              </div>
             </div>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;">
-            <div style="font-size:20px;font-weight:700;color:var(--accent-light);">×${item.quantity}</div>
-            ${subtotal > 0 ? `<div style="font-size:13px;color:var(--text-sub);">¥${subtotal.toLocaleString()}</div>` : ''}
-            <button onclick="deleteHistory('${item.id}')" style="background:none;border:none;color:var(--text-sub);font-size:18px;cursor:pointer;padding:4px;">&times;</button>
-          </div>
-        </div>`;
+            <div style="display:flex;align-items:center;gap:10px;">
+              <div style="font-size:20px;font-weight:700;color:var(--accent-light);">×${item.quantity}</div>
+              ${subtotal > 0 ? `<div style="font-size:13px;color:var(--text-sub);">¥${subtotal.toLocaleString()}</div>` : ''}
+              <button onclick="deleteHistory('${item.id}')" style="background:none;border:none;color:var(--text-sub);font-size:18px;cursor:pointer;padding:4px;">&times;</button>
+            </div>
+          </div>`;
+      });
     });
   }
   el.innerHTML = html;
