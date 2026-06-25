@@ -1371,7 +1371,6 @@ function renderHistoryView(el) {
     });
     vendorOrder.forEach(vName => {
       const vItems = vendorGroups[vName];
-      vItems.sort((a, b) => tokyoRibiyoSortKey(a.productName) - tokyoRibiyoSortKey(b.productName));
       html += `<div style="font-size:12px;color:var(--accent-light);font-weight:700;margin:10px 0 4px;padding:4px 8px;background:rgba(108,99,255,0.1);border-radius:6px;">${esc(vName)}</div>`;
       vItems.forEach(item => {
         const subtotal = (item.price || 0) * (item.quantity || 1);
