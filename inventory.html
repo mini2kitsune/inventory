@@ -584,6 +584,13 @@
       </div>
     </div>
     <div class="settings-section">
+      <h3>並び順</h3>
+      <div class="settings-item" onclick="applyTokyoRibiyoSortOrder()">
+        <span class="settings-item-label" style="color:var(--accent-light)">東京理美容商会の並び順を更新</span>
+        <span class="settings-item-value">&gt;</span>
+      </div>
+    </div>
+    <div class="settings-section">
       <h3>アプリ更新</h3>
       <div class="settings-item" onclick="forceUpdate()">
         <span class="settings-item-label" style="color:var(--success)">最新版に更新</span>
@@ -2362,7 +2369,8 @@ function tokyoRibiyoSortKey(name) {
   if (mi >= 0) return 100000 + mi * 10;
 
   // 2. パーマ剤
-  if (n.includes('コスメ') || n.includes('プリズムプラス') || n === 'アフターローション') return 200000;
+  if (n === 'アフターローション') return 200010;
+  if (n.includes('コスメ') || n.includes('プリズムプラス')) return 200020;
 
   // 3. カラー剤（数字+色名）
   const colorOrder = ['ナチュラル','マット','アッシュ','グレイ','バイオレット','ピンク','レッド','オレンジ'];
@@ -2398,9 +2406,19 @@ function tokyoRibiyoSortKey(name) {
   // 7. カラーストーリー（タマリス、NB）
   if (n.includes('タマリス') || n.match(/^\d*NB$/)) return 700000;
 
-  // 8. クリア系・conc系
-  if (n.includes('クリア')) return 800000;
-  if (n.includes('conc.')) return 810000;
+  // 8. クリア系
+  if (n.includes('クリア')) {
+    if (n.includes('アッシュ')) return 800010;
+    if (n.includes('ピンク'))   return 800020;
+    if (n.includes('アプリコット')) return 800030;
+    return 800000;
+  }
+  // cone./conc.系
+  if (n.includes('cone.') || n.includes('conc.')) {
+    if (n.includes('グレイ')) return 810010;
+    if (n.includes('ローズ')) return 810020;
+    return 810000;
+  }
 
   // 9. クオライン系・アジャスト
   if (n.includes('クオライン') || n.includes('アジャスト')) return 900000;
@@ -2408,25 +2426,30 @@ function tokyoRibiyoSortKey(name) {
   return 999999;
 }
 
-function applyTokyoRibiyoSortOrder() {
+async function applyTokyoRibiyoSortOrder() {
   const vendor = DATA.vendors.find(v => {
     const prods = DATA.products.filter(p => p.vendorId === v.id && p.active !== false);
-    return prods.some(p => p.name && (p.name.includes('ナチュラル') || p.name.includes('conc.') || p.name.includes('クオライン') || p.name.includes('ティアーズ')));
+    return prods.some(p => p.name && (p.name.includes('ナチュラル') || p.name.includes('conc.') || p.name.includes('cone.') || p.name.includes('クオライン') || p.name.includes('ティアーズ')));
   });
-  if (!vendor) {
-    showToast('対象の仕入先が見つかりません');
-    return;
-  }
+  if (!vendor) { showToast('対象の仕入先が見つかりません'); return; }
   const products = DATA.products.filter(p => p.vendorId === vendor.id && p.active !== false);
-  if (products.length === 0) {
-    showToast('商品が見つかりません');
-    return;
-  }
+  if (products.length === 0) { showToast('商品が見つかりません'); return; }
   products.sort((a, b) => tokyoRibiyoSortKey(a.name) - tokyoRibiyoSortKey(b.name));
   products.forEach((p, i) => { p.sortOrder = (i + 1) * 10; });
   saveData(DATA);
+  if (sbClient) {
+    try {
+      for (const p of products) {
+        await sbClient.from('products').update({ sort_order: p.sortOrder }).eq('id', p.id).eq('tenant_id', TENANT_ID);
+      }
+      showToast('並び順を更新しました（' + products.length + '件）');
+    } catch(e) {
+      showToast('保存に失敗しました');
+    }
+  } else {
+    showToast('並び順を更新しました（ローカルのみ）');
+  }
   render();
-  showToast(products.length + '商品の並び順を更新しました');
   closeModal('settings');
 }
 
