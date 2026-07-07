@@ -448,6 +448,7 @@
     <div class="header-title">
       <div class="online-dot" id="onlineIndicator" title="オンライン"></div>
       <h1>在庫管理</h1>
+      <span id="syncTime" style="font-size:11px;color:var(--text-sub);margin-left:4px;"></span>
     </div>
     <div class="header-actions">
       <button class="icon-btn" onclick="openModal('addProduct')" title="商品追加">+</button>
@@ -558,7 +559,7 @@
     <div class="settings-section">
       <h3>仕入れ先管理</h3>
       <div id="vendorList"></div>
-      <div class="settings-item" onclick="addVendorPrompt()">
+      <div class="settings-item" onclick="openAddVendor()">
         <span class="settings-item-label" style="color:var(--accent)">+ 仕入れ先を追加</span>
       </div>
     </div>
@@ -658,6 +659,28 @@
   </div>
 </div>
 
+<!-- 仕入先追加/編集モーダル -->
+<div class="modal-overlay" id="modal-editVendor">
+  <div class="modal">
+    <h2><span id="vendorModalTitle">仕入先を追加</span> <button class="modal-close" onclick="closeModal('editVendor')">&times;</button></h2>
+    <div class="form-group">
+      <label class="form-label">仕入先名</label>
+      <input class="form-input" id="vendorName" placeholder="例: ABC商事">
+    </div>
+    <div class="form-group">
+      <label class="form-label">略称（タブ表示用・5文字以内推奨）</label>
+      <input class="form-input" id="vendorShortName" placeholder="例: ABC">
+    </div>
+    <div class="form-group">
+      <label class="form-label">リードタイム（発注から届くまでの日数）</label>
+      <input class="form-input" id="vendorLeadTime" type="number" min="1" max="90" value="7">
+    </div>
+    <button class="action-btn" onclick="saveVendorEdit()" style="margin-top:8px" id="vendorSaveBtn">追加する</button>
+    <button id="vendorDeleteBtn" onclick="deleteVendorFromModal()" style="display:none;width:100%;margin-top:12px;padding:12px;background:none;border:1.5px solid var(--danger);border-radius:12px;color:var(--danger);font-size:14px;font-weight:600;cursor:pointer;">この仕入先を削除</button>
+    <input type="hidden" id="editVendorId">
+  </div>
+</div>
+
 <!-- 非表示商品モーダル -->
 <div class="modal-overlay" id="modal-hiddenProducts">
   <div class="modal">
@@ -714,6 +737,119 @@ let currentView = 'stock'; // stock | order | history
 let orderCart = []; // { productId, quantity }
 let selectedOrderVendorIds = null; // null = all selected
 let pendingChanges = {}; // productId -> newStock (before save)
+
+// ============================
+// P1: Offline Sync Queue
+// ============================
+const SYNC_QUEUE_KEY = 'inventory_sync_queue';
+let lastSyncTime = null;
+
+function getSyncQueue() {
+  try { return JSON.parse(localStorage.getItem(SYNC_QUEUE_KEY) || '[]'); } catch(e) { return []; }
+}
+
+function saveSyncQueue(q) {
+  localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(q));
+}
+
+function enqueueSync(op) {
+  const q = getSyncQueue();
+  q.push(op);
+  saveSyncQueue(q);
+}
+
+function updateSyncDisplay() {
+  const el = document.getElementById('syncTime');
+  if (!el) return;
+  if (lastSyncTime) {
+    const h = String(lastSyncTime.getHours()).padStart(2,'0');
+    const m = String(lastSyncTime.getMinutes()).padStart(2,'0');
+    el.textContent = `☁ ${h}:${m}`;
+  } else {
+    el.textContent = '';
+  }
+}
+
+async function processSyncQueue() {
+  if (!sbClient || !isOnline) return;
+  const q = getSyncQueue();
+  if (q.length === 0) return;
+  const idMap = {};
+  const remaining = [];
+  for (const op of q) {
+    let ok = false;
+    try {
+      switch (op.type) {
+        case 'update_stock': {
+          const rid = idMap[op.productId] || op.productId;
+          const { error } = await sbClient.rpc('update_stock', { p_product_id: rid, p_new_quantity: op.newStock });
+          ok = !error;
+          break;
+        }
+        case 'save_product_edit': {
+          const rid = idMap[op.id] || op.id;
+          const [r1, r2] = await Promise.all([
+            sbClient.from('products').update({ price: op.price }).eq('id', rid).eq('tenant_id', TENANT_ID),
+            sbClient.from('inventory').update({ ideal_stock: op.minStock, monthly_consumption: op.monthly, seasonal_factor: op.seasonal }).eq('product_id', rid).eq('tenant_id', TENANT_ID),
+          ]);
+          ok = !r1.error && !r2.error;
+          break;
+        }
+        case 'add_product': {
+          const vrid = idMap[op.vendorId] || op.vendorId;
+          const { data: pd, error: pe } = await sbClient.from('products').insert({
+            tenant_id: TENANT_ID, vendor_id: vrid, name: op.name, price: 0, sort_order: op.sortOrder, is_active: true,
+          }).select('id').single();
+          if (!pe && pd) {
+            await sbClient.from('inventory').insert({ tenant_id: TENANT_ID, product_id: pd.id, current_stock: op.stock, ideal_stock: op.minStock });
+            idMap[op.tempId] = pd.id;
+            const lp = DATA.products.find(p => p.id === op.tempId);
+            if (lp) lp.id = pd.id;
+            DATA.orderHistory.forEach(h => { if (h.productId === op.tempId) h.productId = pd.id; });
+            DATA.stocktakingHistory.forEach(h => { if (h.productId === op.tempId) h.productId = pd.id; });
+            saveData(DATA);
+            ok = true;
+          }
+          break;
+        }
+        case 'add_vendor': {
+          const { data, error } = await sbClient.from('vendors').insert({
+            tenant_id: TENANT_ID, name: op.name, short_name: op.shortName, sort_order: op.sortOrder, is_active: true, lead_time_days: op.leadTimeDays || 7,
+          }).select('id').single();
+          if (!error && data) {
+            idMap[op.tempId] = data.id;
+            const lv = DATA.vendors.find(v => v.id === op.tempId);
+            if (lv) lv.id = data.id;
+            DATA.products.forEach(p => { if (p.vendorId === op.tempId) p.vendorId = data.id; });
+            saveData(DATA);
+            ok = true;
+          }
+          break;
+        }
+        case 'edit_vendor': {
+          const rid = idMap[op.id] || op.id;
+          const { error } = await sbClient.from('vendors').update({ name: op.name, short_name: op.shortName, lead_time_days: op.leadTimeDays }).eq('id', rid).eq('tenant_id', TENANT_ID);
+          ok = !error;
+          break;
+        }
+        case 'delete_product': {
+          const rid = idMap[op.id] || op.id;
+          const { error } = await sbClient.from('products').update({ is_active: false }).eq('id', rid).eq('tenant_id', TENANT_ID);
+          ok = !error;
+          break;
+        }
+      }
+    } catch(e) {
+      console.error('キュー処理失敗:', op.type, e);
+    }
+    if (!ok) remaining.push(op);
+  }
+  saveSyncQueue(remaining);
+  if (remaining.length < q.length) {
+    lastSyncTime = new Date();
+    updateSyncDisplay();
+  }
+}
 
 // ============================
 // Online / Offline
@@ -944,6 +1080,7 @@ async function loadDataFromSupabase() {
       name: v.name,
       shortName: v.short_name || v.name,
       sortOrder: v.sort_order,
+      leadTimeDays: v.lead_time_days || 7,
     }));
 
     DATA.products = (pRes.data || []).map(p => {
@@ -998,6 +1135,8 @@ async function loadDataFromSupabase() {
     saveData(DATA);
     isOnline = true;
     updateOnlineStatus();
+    lastSyncTime = new Date();
+    updateSyncDisplay();
     await autoApplySortOrder();
   } catch(e) {
     console.warn('Supabase load failed, using cache:', e);
@@ -1015,9 +1154,12 @@ async function loadDataFromSupabase() {
 async function init() {
   sbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-  window.addEventListener('online', () => {
+  window.addEventListener('online', async () => {
     isOnline = true;
     updateOnlineStatus();
+    await processSyncQueue();
+    await loadDataFromSupabase();
+    if (currentUser) { setupRealtime(); render(); }
     showToast('オンライン');
   });
   window.addEventListener('offline', () => {
@@ -1083,6 +1225,7 @@ async function init() {
   setInterval(async () => {
     if (!isOnline && sbClient && currentUser) {
       try {
+        await processSyncQueue();
         await loadDataFromSupabase();
         if (isOnline) { setupRealtime(); render(); showToast('オンライン復帰'); }
       } catch(e) {}
@@ -1617,43 +1760,57 @@ async function saveStockChanges() {
   }
   pendingChanges = {};
   saveData(DATA);
-  showToast('保存しました');
   render();
 
-  // Supabase: call update_stock RPC for each changed product
-  if (sbClient && isOnline) {
-    for (const { productId, newStock } of stockUpdates) {
-      try {
-        const { error } = await sbClient.rpc('update_stock', {
-          p_product_id: productId,
-          p_new_quantity: newStock,
-        });
-        if (error) throw error;
-      } catch(e) {
-        console.error('update_stock失敗:', e);
-      }
+  if (!sbClient || !isOnline) {
+    stockUpdates.forEach(({ productId, newStock }) => enqueueSync({ type: 'update_stock', productId, newStock }));
+    showToast('保存しました');
+    return;
+  }
+
+  let anyFailed = false;
+  for (const { productId, newStock } of stockUpdates) {
+    try {
+      const { error } = await sbClient.rpc('update_stock', { p_product_id: productId, p_new_quantity: newStock });
+      if (error) throw error;
+    } catch(e) {
+      console.error('update_stock失敗:', e);
+      enqueueSync({ type: 'update_stock', productId, newStock });
+      anyFailed = true;
     }
+  }
+  if (anyFailed) {
+    showToast('⚠ サーバー保存に失敗（端末には保存済み）');
+  } else {
+    showToast('保存しました');
+    lastSyncTime = new Date();
+    updateSyncDisplay();
   }
 }
 
 function generateOrderRecommendations() {
   orderCart = [];
+  const now = new Date();
   DATA.products.forEach(p => {
     if (p.active === false) return;
+    const vendor = DATA.vendors.find(v => v.id === p.vendorId);
+    const leadDays = vendor?.leadTimeDays || 7;
     const minStock = p.minStock || 0;
     const monthly = p.monthlyConsumption || 0;
     const seasonal = p.seasonalFactor || 1;
     const daily = monthly * seasonal / 30;
 
-    // 目標在庫 = MAX(最低在庫数, 日次消費量 × 21日分)
     const targetStock = Math.max(minStock, Math.ceil(daily * 21));
     const recommended = targetStock - p.stock;
 
     if (recommended > 0) {
-      orderCart.push({
-        productId: p.id,
-        quantity: recommended,
-      });
+      // P2: リードタイム内に発注済みなら推奨から除外
+      const cutoff = new Date(now.getTime() - leadDays * 24 * 60 * 60 * 1000);
+      const recentOrder = DATA.orderHistory.find(h =>
+        h.productId === p.id && new Date(h.date) >= cutoff
+      );
+      if (recentOrder) return;
+      orderCart.push({ productId: p.id, quantity: recommended });
     }
   });
 }
@@ -1681,30 +1838,33 @@ async function saveProductEdit() {
   const monthly = parseFloat(document.getElementById('editMonthly').value) || 0;
   const seasonal = parseFloat(document.getElementById('editSeasonal').value) || 1;
 
-  // Update Supabase
-  if (sbClient && isOnline) {
-    try {
-      await Promise.all([
-        sbClient.from('products').update({ price }).eq('id', id).eq('tenant_id', TENANT_ID),
-        sbClient.from('inventory').update({
-          ideal_stock: minStock,
-          monthly_consumption: monthly,
-          seasonal_factor: seasonal,
-        }).eq('product_id', id).eq('tenant_id', TENANT_ID),
-      ]);
-    } catch(e) {
-      console.error('saveProductEdit失敗:', e);
-    }
-  }
-
   p.minStock = minStock;
   p.price = price;
   p.monthlyConsumption = monthly;
   p.seasonalFactor = seasonal;
   saveData(DATA);
   closeModal('editProduct');
-  showToast('保存しました');
   render();
+
+  if (!sbClient || !isOnline) {
+    enqueueSync({ type: 'save_product_edit', id, minStock, price, monthly, seasonal });
+    showToast('保存しました');
+    return;
+  }
+
+  try {
+    await Promise.all([
+      sbClient.from('products').update({ price }).eq('id', id).eq('tenant_id', TENANT_ID),
+      sbClient.from('inventory').update({ ideal_stock: minStock, monthly_consumption: monthly, seasonal_factor: seasonal }).eq('product_id', id).eq('tenant_id', TENANT_ID),
+    ]);
+    showToast('保存しました');
+    lastSyncTime = new Date();
+    updateSyncDisplay();
+  } catch(e) {
+    console.error('saveProductEdit失敗:', e);
+    enqueueSync({ type: 'save_product_edit', id, minStock, price, monthly, seasonal });
+    showToast('⚠ サーバー保存に失敗（端末には保存済み）');
+  }
 }
 
 async function deleteProduct() {
@@ -1713,21 +1873,28 @@ async function deleteProduct() {
   if (!p) return;
   if (!confirm(`「${p.name}」を削除しますか？`)) return;
 
-  // Update Supabase
-  if (sbClient && isOnline) {
-    try {
-      const { error } = await sbClient.from('products').update({ is_active: false }).eq('id', id).eq('tenant_id', TENANT_ID);
-      if (error) throw error;
-    } catch(e) {
-      console.error('deleteProduct失敗:', e);
-    }
-  }
-
   p.active = false;
   saveData(DATA);
   closeModal('editProduct');
-  showToast('削除しました');
   render();
+
+  if (!sbClient || !isOnline) {
+    enqueueSync({ type: 'delete_product', id });
+    showToast('削除しました');
+    return;
+  }
+
+  try {
+    const { error } = await sbClient.from('products').update({ is_active: false }).eq('id', id).eq('tenant_id', TENANT_ID);
+    if (error) throw error;
+    showToast('削除しました');
+    lastSyncTime = new Date();
+    updateSyncDisplay();
+  } catch(e) {
+    console.error('deleteProduct失敗:', e);
+    enqueueSync({ type: 'delete_product', id });
+    showToast('⚠ サーバー保存に失敗（端末には保存済み）');
+  }
 }
 
 // 手動履歴追加
@@ -2069,101 +2236,157 @@ async function addProduct() {
 
   if (!name) { showToast('商品名を入力してください'); return; }
 
-  // Duplicate check
   const exists = DATA.products.find(p =>
     p.vendorId === vendorId && p.name === name && p.active !== false
   );
   if (exists) { showToast('同じ商品名が既にあります'); return; }
 
   const maxSort = Math.max(0, ...DATA.products.filter(p => p.vendorId === vendorId).map(p => p.sortOrder || 0));
+  const sortOrder = maxSort + 10;
   let newId = uid();
 
-  if (sbClient && isOnline) {
-    try {
-      const { data: productData, error: pErr } = await sbClient.from('products').insert({
-        tenant_id: TENANT_ID,
-        vendor_id: vendorId,
-        name,
-        price: 0,
-        sort_order: maxSort + 10,
-        is_active: true,
-      }).select('id').single();
-      if (pErr) throw pErr;
-      newId = productData.id;
-
-      const { error: iErr } = await sbClient.from('inventory').insert({
-        tenant_id: TENANT_ID,
-        product_id: newId,
-        current_stock: stock,
-        ideal_stock: minStock,
-      });
-      if (iErr) throw iErr;
-    } catch(e) {
-      showToast('追加に失敗しました: ' + (e.message || e));
-      return;
-    }
-  }
-
-  DATA.products.push({
-    id: newId,
-    vendorId,
-    name,
-    stock,
-    minStock,
-    sortOrder: maxSort + 10,
-    active: true,
-    price: 0,
-    monthlyConsumption: 0,
-    seasonalFactor: 1,
-  });
-
+  const newProduct = { id: newId, vendorId, name, stock, minStock, sortOrder, active: true, price: 0, monthlyConsumption: 0, seasonalFactor: 1 };
+  DATA.products.push(newProduct);
   saveData(DATA);
   closeModal('addProduct');
   document.getElementById('addName').value = '';
   document.getElementById('addStock').value = '0';
   document.getElementById('addMinStock').value = '1';
   currentVendorId = vendorId;
-  showToast('追加しました');
   render();
+
+  if (!sbClient || !isOnline) {
+    enqueueSync({ type: 'add_product', vendorId, name, stock, minStock, sortOrder, tempId: newId });
+    showToast('追加しました');
+    return;
+  }
+
+  try {
+    const { data: productData, error: pErr } = await sbClient.from('products').insert({
+      tenant_id: TENANT_ID, vendor_id: vendorId, name, price: 0, sort_order: sortOrder, is_active: true,
+    }).select('id').single();
+    if (pErr) throw pErr;
+    const realId = productData.id;
+    const { error: iErr } = await sbClient.from('inventory').insert({
+      tenant_id: TENANT_ID, product_id: realId, current_stock: stock, ideal_stock: minStock,
+    });
+    if (iErr) throw iErr;
+    newProduct.id = realId;
+    DATA.orderHistory.forEach(h => { if (h.productId === newId) h.productId = realId; });
+    DATA.stocktakingHistory.forEach(h => { if (h.productId === newId) h.productId = realId; });
+    saveData(DATA);
+    showToast('追加しました');
+    lastSyncTime = new Date();
+    updateSyncDisplay();
+  } catch(e) {
+    console.error('addProduct失敗:', e);
+    enqueueSync({ type: 'add_product', vendorId, name, stock, minStock, sortOrder, tempId: newId });
+    showToast('⚠ サーバー保存に失敗（端末には保存済み）');
+  }
 }
 
 // ============================
 // Vendor Management
 // ============================
 
-async function addVendorPrompt() {
-  const name = prompt('仕入れ先の名前を入力:');
-  if (!name || !name.trim()) return;
-  const trimmed = name.trim();
-  if (DATA.vendors.find(v => v.name === trimmed)) {
-    showToast('同じ名前の仕入れ先があります');
-    return;
-  }
-  const maxSort = Math.max(0, ...DATA.vendors.map(v => v.sortOrder));
-  const shortName = trimmed.length > 5 ? trimmed.substring(0, 5) : trimmed;
-  let newId = uid();
+function openAddVendor() {
+  document.getElementById('vendorModalTitle').textContent = '仕入先を追加';
+  document.getElementById('vendorName').value = '';
+  document.getElementById('vendorShortName').value = '';
+  document.getElementById('vendorLeadTime').value = '7';
+  document.getElementById('editVendorId').value = '';
+  document.getElementById('vendorSaveBtn').textContent = '追加する';
+  document.getElementById('vendorDeleteBtn').style.display = 'none';
+  openModal('editVendor');
+}
 
-  if (sbClient && isOnline) {
+function openEditVendor(id) {
+  const v = DATA.vendors.find(x => x.id === id);
+  if (!v) return;
+  document.getElementById('vendorModalTitle').textContent = '仕入先を編集';
+  document.getElementById('vendorName').value = v.name;
+  document.getElementById('vendorShortName').value = v.shortName || v.name;
+  document.getElementById('vendorLeadTime').value = v.leadTimeDays || 7;
+  document.getElementById('editVendorId').value = id;
+  document.getElementById('vendorSaveBtn').textContent = '保存する';
+  document.getElementById('vendorDeleteBtn').style.display = 'block';
+  openModal('editVendor');
+}
+
+async function saveVendorEdit() {
+  const id = document.getElementById('editVendorId').value;
+  const name = document.getElementById('vendorName').value.trim();
+  const shortName = document.getElementById('vendorShortName').value.trim() || (name.length > 5 ? name.substring(0, 5) : name);
+  const leadTimeDays = parseInt(document.getElementById('vendorLeadTime').value) || 7;
+
+  if (!name) { showToast('仕入先名を入力してください'); return; }
+
+  if (!id) {
+    // Add mode
+    if (DATA.vendors.find(v => v.name === name)) { showToast('同じ名前の仕入先があります'); return; }
+    const maxSort = Math.max(0, ...DATA.vendors.map(v => v.sortOrder || 0));
+    const sortOrder = maxSort + 1;
+    let newId = uid();
+    DATA.vendors.push({ id: newId, name, shortName, sortOrder, leadTimeDays });
+    saveData(DATA);
+    closeModal('editVendor');
+    renderSettingsVendors();
+    render();
+    if (!sbClient || !isOnline) {
+      enqueueSync({ type: 'add_vendor', name, shortName, sortOrder, leadTimeDays, tempId: newId });
+      showToast('追加しました');
+      return;
+    }
     try {
       const { data, error } = await sbClient.from('vendors').insert({
-        tenant_id: TENANT_ID,
-        name: trimmed,
-        short_name: shortName,
-        sort_order: maxSort + 1,
-        is_active: true,
+        tenant_id: TENANT_ID, name, short_name: shortName, sort_order: sortOrder, is_active: true, lead_time_days: leadTimeDays,
       }).select('id').single();
       if (error) throw error;
-      newId = data.id;
+      const lv = DATA.vendors.find(v => v.id === newId);
+      if (lv) lv.id = data.id;
+      DATA.products.forEach(p => { if (p.vendorId === newId) p.vendorId = data.id; });
+      saveData(DATA);
+      showToast('追加しました');
+      lastSyncTime = new Date(); updateSyncDisplay();
     } catch(e) {
       console.error('addVendor失敗:', e);
+      enqueueSync({ type: 'add_vendor', name, shortName, sortOrder, leadTimeDays, tempId: newId });
+      showToast('⚠ サーバー保存に失敗（端末には保存済み）');
+    }
+  } else {
+    // Edit mode
+    const v = DATA.vendors.find(x => x.id === id);
+    if (!v) return;
+    if (name !== v.name && DATA.vendors.find(x => x.id !== id && x.name === name)) {
+      showToast('同じ名前の仕入先があります'); return;
+    }
+    v.name = name; v.shortName = shortName; v.leadTimeDays = leadTimeDays;
+    saveData(DATA);
+    closeModal('editVendor');
+    renderSettingsVendors();
+    render();
+    if (!sbClient || !isOnline) {
+      enqueueSync({ type: 'edit_vendor', id, name, shortName, leadTimeDays });
+      showToast('保存しました');
+      return;
+    }
+    try {
+      const { error } = await sbClient.from('vendors').update({ name, short_name: shortName, lead_time_days: leadTimeDays }).eq('id', id).eq('tenant_id', TENANT_ID);
+      if (error) throw error;
+      showToast('保存しました');
+      lastSyncTime = new Date(); updateSyncDisplay();
+    } catch(e) {
+      console.error('editVendor失敗:', e);
+      enqueueSync({ type: 'edit_vendor', id, name, shortName, leadTimeDays });
+      showToast('⚠ サーバー保存に失敗（端末には保存済み）');
     }
   }
+}
 
-  DATA.vendors.push({ id: newId, name: trimmed, shortName, sortOrder: maxSort + 1 });
-  saveData(DATA);
-  showToast('追加しました');
-  renderSettingsVendors();
-  render();
+async function deleteVendorFromModal() {
+  const id = document.getElementById('editVendorId').value;
+  closeModal('editVendor');
+  await deleteVendor(id);
 }
 
 async function deleteVendor(id) {
@@ -2202,9 +2425,12 @@ function renderSettingsVendors() {
   el.innerHTML = DATA.vendors
     .sort((a,b) => a.sortOrder - b.sortOrder)
     .map(v => `
-      <div class="settings-item">
-        <span class="settings-item-label">${esc(v.name)}</span>
-        <button class="order-remove" onclick="event.stopPropagation();deleteVendor('${v.id}')">&times;</button>
+      <div class="settings-item" onclick="openEditVendor('${v.id}')">
+        <div>
+          <span class="settings-item-label">${esc(v.name)}</span>
+          <span style="font-size:11px;color:var(--text-sub);margin-left:8px;">リード${v.leadTimeDays || 7}日</span>
+        </div>
+        <span class="settings-item-value">&gt;</span>
       </div>
     `).join('');
 }
