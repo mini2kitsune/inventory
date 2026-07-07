@@ -413,6 +413,20 @@
       font-weight: 500; min-height: 13px; text-align: center;
     }
 
+    /* ===== D&D Sort (P7) ===== */
+    .dnd-handle {
+      width: 28px; height: 100%; min-height: 44px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--text-sub); font-size: 16px; cursor: grab;
+      padding: 0 2px; user-select: none; -webkit-user-select: none; flex-shrink: 0;
+    }
+    .card.dnd-dragging {
+      opacity: 0.72; transform: scale(1.02);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25); z-index: 50; position: relative;
+    }
+    .card.dnd-target-above { box-shadow: 0 -3px 0 0 var(--accent); }
+    .card.dnd-target-below { box-shadow: 0 3px 0 0 var(--accent); }
+
     /* ===== Login Overlay ===== */
     #loginOverlay {
       position: fixed; inset: 0;
@@ -495,7 +509,10 @@
       <label class="form-label">最低在庫数（この数を下回ると発注推奨）</label>
       <input class="form-input" id="addMinStock" type="number" value="1" min="0">
     </div>
-    <button class="action-btn" onclick="addProduct()" style="margin-top:8px">追加する</button>
+    <div style="display:flex;gap:8px;margin-top:8px;">
+      <button class="action-btn" onclick="addProduct(false)" style="flex:1;">追加する</button>
+      <button onclick="addProduct(true)" style="flex:1;padding:12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:12px;color:var(--accent-light);font-size:14px;font-weight:600;cursor:pointer;">追加して次へ</button>
+    </div>
   </div>
 </div>
 
@@ -514,13 +531,18 @@
     </div>
     <div class="form-group">
       <label class="form-label">平均月間消費量</label>
-      <input class="form-input" id="editMonthly" type="number" min="0" step="0.1">
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input class="form-input" id="editMonthly" type="number" min="0" step="0.1" style="flex:1;">
+        <button id="useActualBtn" onclick="useActualConsumption()" style="display:none;padding:8px 12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--accent-light);font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;">実績を使う</button>
+      </div>
+      <div id="editActualStat" style="font-size:12px;color:var(--text-sub);margin-top:4px;min-height:16px;"></div>
     </div>
     <div class="form-group">
       <label class="form-label">季節調整係数（通常は1.0）</label>
       <input class="form-input" id="editSeasonal" type="number" min="0" step="0.1" value="1">
     </div>
     <button class="action-btn" onclick="saveProductEdit()" style="margin-top:8px">保存</button>
+    <button onclick="duplicateProduct()" style="width:100%;margin-top:12px;padding:12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:12px;color:var(--accent-light);font-size:14px;font-weight:600;cursor:pointer;">複製して追加</button>
     <button onclick="deleteProduct()" style="width:100%;margin-top:12px;padding:12px;background:none;border:1.5px solid var(--danger);border-radius:12px;color:var(--danger);font-size:14px;font-weight:600;cursor:pointer;">この商品を削除</button>
     <input type="hidden" id="editProductId">
   </div>
@@ -590,6 +612,18 @@
         <span class="settings-item-label">非表示の商品</span>
         <span class="settings-item-value">&gt;</span>
       </div>
+      <div class="settings-item" onclick="sortAllProductsAiueo()">
+        <span class="settings-item-label">五十音順に一括整列</span>
+        <span class="settings-item-value">&gt;</span>
+      </div>
+      <div class="settings-item" onclick="downloadProductCsvTemplate()">
+        <span class="settings-item-label">商品マスタCSVテンプレートをダウンロード</span>
+        <span class="settings-item-value">&gt;</span>
+      </div>
+      <div class="settings-item" onclick="document.getElementById('productCsvFile').click()">
+        <span class="settings-item-label">商品マスタCSVをインポート</span>
+        <span class="settings-item-value">&gt;</span>
+      </div>
     </div>
     <div class="settings-section">
       <h3>アプリ更新</h3>
@@ -616,6 +650,7 @@
 
 <!-- インポート用隠しinput -->
 <input type="file" id="importFile" accept=".json" style="display:none" onchange="handleImport(event)">
+<input type="file" id="productCsvFile" accept=".csv" style="display:none" onchange="importProductCsv(event)">
 
 <!-- ログインオーバーレイ -->
 <div id="loginOverlay">
@@ -708,7 +743,6 @@ let isOnline = navigator.onLine;
 // Data Layer
 // ============================
 const STORAGE_KEY = 'inventory_app';
-const SORT_ORDER_VERSION = '3'; // 変更時はインクリメント
 
 function loadDataFromCache() {
   try {
@@ -1059,6 +1093,23 @@ async function doLogout() {
 // ============================
 // Supabase Data Loading
 // ============================
+async function fetchAllOrderHistory() {
+  const PAGE = 1000;
+  let all = [], from = 0;
+  while (true) {
+    const { data, error } = await sbClient.from('order_history')
+      .select('*').eq('tenant_id', TENANT_ID)
+      .order('order_date', { ascending: false })
+      .order('created_at', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    all = all.concat(data || []);
+    if (!data || data.length < PAGE) break;
+    from += PAGE;
+  }
+  return { data: all };
+}
+
 async function loadDataFromSupabase() {
   if (!sbClient) return;
   try {
@@ -1066,7 +1117,7 @@ async function loadDataFromSupabase() {
       sbClient.from('vendors').select('*').eq('tenant_id', TENANT_ID).eq('is_active', true).order('sort_order'),
       sbClient.from('products').select('*').eq('tenant_id', TENANT_ID).eq('is_active', true).order('sort_order'),
       sbClient.from('inventory').select('*').eq('tenant_id', TENANT_ID),
-      sbClient.from('order_history').select('*').eq('tenant_id', TENANT_ID).order('order_date', { ascending: false }).order('created_at', { ascending: true }).limit(500),
+      fetchAllOrderHistory(),
       sbClient.from('stocktaking_history').select('*').eq('tenant_id', TENANT_ID).order('stocktaking_date', { ascending: false }).limit(200),
     ]);
 
@@ -1137,7 +1188,7 @@ async function loadDataFromSupabase() {
     updateOnlineStatus();
     lastSyncTime = new Date();
     updateSyncDisplay();
-    await autoApplySortOrder();
+    // autoApplySortOrder: P7でD&D実装完了・並びはsortOrderに焼き付け済みのため削除
   } catch(e) {
     console.warn('Supabase load failed, using cache:', e);
     // Use cache (DATA is already set from loadDataFromCache on page load)
@@ -1299,11 +1350,12 @@ function renderStockView(el) {
       .sort((a,b) => new Date(b.date) - new Date(a.date))[0];
     const prevHint = lastStk ? `前回: ${lastStk.quantity}` : '';
     return `
-      <div class="card${changed ? ' changed' : ''}${isZero ? ' zero' : ''}${isChecked ? ' stk-checked' : ''}" id="card-${p.id}">
+      <div class="card${changed ? ' changed' : ''}${isZero ? ' zero' : ''}${isChecked ? ' stk-checked' : ''}" id="card-${p.id}" data-pid="${p.id}">
+        <div class="dnd-handle" onmousedown="dndStart(event,'${p.id}')" ontouchstart="dndStart(event,'${p.id}')">☰</div>
         <div class="stk-check" id="stkbox-${p.id}" onclick="toggleStocktakeCheck('${p.id}',event)">
           ${isChecked ? '<svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 7l3 3 7-7" stroke="#51cf66" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>' : ''}
         </div>
-        <div class="card-left" onclick="openProductEdit('${p.id}')" style="cursor:pointer;margin-left:8px;">
+        <div class="card-left" onclick="openProductEdit('${p.id}')" style="cursor:pointer;margin-left:4px;">
           <div class="product-name">${esc(p.name)}</div>
           <div class="product-meta">
             <span class="product-stock">在庫: ${stock}</span>
@@ -1463,7 +1515,8 @@ function renderHistoryView(el) {
       <div style="font-size:17px;font-weight:700;">${y}年${parseInt(m)}月</div>
       <button onclick="changeHistoryMonth(-1)" style="background:var(--surface2);border:none;color:var(--text);width:40px;height:40px;border-radius:10px;font-size:20px;cursor:pointer;${currentIdx <= 0 ? 'opacity:0.3;pointer-events:none;' : ''}">&gt;</button>
     </div>
-    <button onclick="openModal('addHistory');initHistoryModal()" style="width:100%;padding:10px;margin-bottom:12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--accent-light);font-size:14px;font-weight:600;cursor:pointer;">+ 手動で履歴を追加</button>`;
+    <button onclick="openModal('addHistory');initHistoryModal()" style="width:100%;padding:10px;margin-bottom:8px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--accent-light);font-size:14px;font-weight:600;cursor:pointer;">+ 手動で履歴を追加</button>
+    ${window._lastChecklistItems ? `<button onclick="showChecklist(window._lastChecklistItems)" style="width:100%;padding:10px;margin-bottom:12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--text);font-size:14px;font-weight:600;cursor:pointer;">📋 発注チェックリストを再表示</button>` : ''}`;
 
   // Filter by selected month
   const history = DATA.orderHistory
@@ -1486,17 +1539,19 @@ function renderHistoryView(el) {
     <div><div style="font-size:24px;font-weight:700;color:var(--warning);">¥${monthTotal.toLocaleString()}</div><div style="font-size:11px;color:var(--text-sub);">合計</div></div>
   </div>`;
 
-  // Group by date
+  // Group by date (YYYY-MM-DD JST key; display uses toLocaleDateString)
   const groups = {};
   history.forEach(h => {
-    const dateStr = new Date(h.date).toLocaleDateString('ja-JP');
-    if (!groups[dateStr]) groups[dateStr] = [];
+    const dateKey = toJSTDateKey(new Date(h.date));
+    if (!groups[dateKey]) groups[dateKey] = [];
     const p = DATA.products.find(x => x.id === h.productId);
     const v = DATA.vendors.find(x => x.id === h.vendorId);
-    groups[dateStr].push({ ...h, productName: h.productName || p?.name || '削除済み', vendorName: h.vendorName || v?.name || '' });
+    groups[dateKey].push({ ...h, productName: h.productName || p?.name || '削除済み', vendorName: h.vendorName || v?.name || '' });
   });
 
-  for (const [date, items] of Object.entries(groups)) {
+  for (const [dateKey, items] of Object.entries(groups)) {
+    const [dy, dm, dd] = dateKey.split('-').map(Number);
+    const date = `${dy}/${dm}/${dd}`;
     // 仕入先ごとの合計金額を計算
     const vendorTotals = {};
     let dateTotal = 0;
@@ -1509,7 +1564,7 @@ function renderHistoryView(el) {
 
     html += `<div style="font-size:13px;color:var(--text-sub);font-weight:600;margin:16px 0 8px;display:flex;justify-content:space-between;align-items:center;">
       ${date}（${items.length}件）
-      <button onclick="deleteHistoryByDate('${date}')" style="background:rgba(255,107,107,0.15);border:none;color:var(--danger);font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;cursor:pointer;">まとめて削除</button>
+      <button onclick="deleteHistoryByDate('${dateKey}')" style="background:rgba(255,107,107,0.15);border:none;color:var(--danger);font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;cursor:pointer;">まとめて削除</button>
     </div>`;
 
     if (dateTotal > 0) {
@@ -1578,12 +1633,14 @@ function _schedulePendingDelete(fn) {
   }, 5000);
 }
 
-function deleteHistoryByDate(dateStr) {
-  const items = DATA.orderHistory.filter(h => new Date(h.date).toLocaleDateString('ja-JP') === dateStr);
-  if (!confirm(`${dateStr}の${items.length}件をまとめて削除しますか？`)) return;
+function deleteHistoryByDate(dateKey) {
+  const items = DATA.orderHistory.filter(h => toJSTDateKey(new Date(h.date)) === dateKey);
+  const [dy, dm, dd] = dateKey.split('-').map(Number);
+  const displayDate = `${dy}/${dm}/${dd}`;
+  if (!confirm(`${displayDate}の${items.length}件をまとめて削除しますか？`)) return;
   lastDeleted = items.map(h => ({ ...h }));
   const ids = items.map(h => h.id);
-  DATA.orderHistory = DATA.orderHistory.filter(h => new Date(h.date).toLocaleDateString('ja-JP') !== dateStr);
+  DATA.orderHistory = DATA.orderHistory.filter(h => toJSTDateKey(new Date(h.date)) !== dateKey);
   saveData(DATA);
   renderContent();
   showUndoToast();
@@ -1815,7 +1872,156 @@ function generateOrderRecommendations() {
   });
 }
 
+// 商品複製（P6a）
+async function duplicateProduct() {
+  const id = document.getElementById('editProductId').value;
+  const src = DATA.products.find(x => x.id === id);
+  if (!src) return;
+
+  const newId = uid();
+  const newProduct = {
+    ...src,
+    id: newId,
+    name: src.name + '（コピー）',
+    sortOrder: (src.sortOrder || 0) + 5,
+  };
+  DATA.products.push(newProduct);
+  saveData(DATA);
+  closeModal('editProduct');
+  render();
+  showToast(`「${newProduct.name}」を追加しました`);
+
+  // Supabaseへ保存
+  if (sbClient && isOnline) {
+    try {
+      const { data: pd, error: pErr } = await sbClient.from('products').insert({
+        tenant_id: TENANT_ID,
+        vendor_id: newProduct.vendorId,
+        name: newProduct.name,
+        price: newProduct.price || 0,
+        sort_order: newProduct.sortOrder,
+        is_active: true,
+      }).select('id').single();
+      if (pErr) throw pErr;
+      const realId = pd.id;
+      const { error: iErr } = await sbClient.from('inventory').insert({
+        tenant_id: TENANT_ID,
+        product_id: realId,
+        current_stock: newProduct.stock || 0,
+        ideal_stock: newProduct.minStock || 0,
+        monthly_consumption: newProduct.monthlyConsumption || 0,
+        seasonal_factor: newProduct.seasonalFactor || 1,
+      });
+      if (iErr) throw iErr;
+      newProduct.id = realId;
+      saveData(DATA);
+      lastSyncTime = new Date();
+      updateSyncDisplay();
+    } catch(e) {
+      console.error('duplicateProduct失敗:', e);
+      enqueueSync({ type: 'add_product', vendorId: newProduct.vendorId, name: newProduct.name, stock: newProduct.stock || 0, minStock: newProduct.minStock || 0, sortOrder: newProduct.sortOrder, tempId: newId });
+    }
+  } else {
+    enqueueSync({ type: 'add_product', vendorId: newProduct.vendorId, name: newProduct.name, stock: newProduct.stock || 0, minStock: newProduct.minStock || 0, sortOrder: newProduct.sortOrder, tempId: newId });
+  }
+
+  // 複製した商品の編集モーダルを開く
+  setTimeout(() => openProductEdit(newProduct.id), 100);
+}
+
+// 商品マスタCSVテンプレートダウンロード（P6c）
+function downloadProductCsvTemplate() {
+  const header = '仕入れ先,商品名,最低在庫数,単価';
+  const examples = DATA.vendors.slice(0, 2).flatMap(v =>
+    DATA.products.filter(p => p.vendorId === v.id && p.active !== false).slice(0, 2).map(p =>
+      `${v.name},${p.name},${p.minStock || 0},${p.price || 0}`
+    )
+  );
+  if (examples.length === 0) {
+    DATA.vendors.slice(0, 1).forEach(v => examples.push(`${v.name},新商品名,1,0`));
+  }
+  const csv = [header, ...examples].join('\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = '商品マスタインポート用.csv'; a.click();
+}
+
+// 商品マスタCSVインポート（P6c）
+async function importProductCsv(event) {
+  const file = event.target.files[0];
+  event.target.value = '';
+  if (!file) return;
+  const text = await file.text();
+  const lines = text.replace(/\r/g, '').replace(/^﻿/, '').split('\n').filter(l => l.trim());
+  if (lines.length < 2) { showToast('データがありません'); return; }
+
+  const newProducts = [];
+  const errors = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+    if (cols.length < 2) { errors.push(`行${i+1}: 列数不足`); continue; }
+    const [vendorName, productName, minStockStr = '1', priceStr = '0'] = cols;
+    if (!vendorName || !productName) { errors.push(`行${i+1}: データ不正`); continue; }
+    const vendor = DATA.vendors.find(v => v.name === vendorName);
+    if (!vendor) { errors.push(`行${i+1}: 仕入れ先「${vendorName}」が見つかりません`); continue; }
+    const exists = DATA.products.find(p => p.vendorId === vendor.id && p.name === productName && p.active !== false);
+    if (exists) { errors.push(`行${i+1}: 「${productName}」は既に存在します（スキップ）`); continue; }
+    const maxSort = Math.max(0, ...DATA.products.filter(p => p.vendorId === vendor.id).map(p => p.sortOrder || 0));
+    newProducts.push({
+      id: uid(),
+      vendorId: vendor.id,
+      name: productName,
+      stock: 0,
+      minStock: parseInt(minStockStr) || 1,
+      price: parseInt(priceStr) || 0,
+      sortOrder: maxSort + 10 + newProducts.filter(np => np.vendorId === vendor.id).length * 10,
+      active: true,
+      monthlyConsumption: 0,
+      seasonalFactor: 1,
+    });
+  }
+
+  if (errors.length > 0) {
+    alert('以下の行でエラーがありました（その他は正常に取り込みます）:\n' + errors.join('\n'));
+  }
+  if (newProducts.length === 0) { showToast('取り込める商品がありませんでした'); return; }
+
+  newProducts.forEach(p => DATA.products.push(p));
+  saveData(DATA);
+  render();
+  showToast(`${newProducts.length}件の商品を取り込みました`);
+
+  if (sbClient && isOnline) {
+    for (const p of newProducts) {
+      try {
+        const { data: pd, error: pErr } = await sbClient.from('products').insert({
+          tenant_id: TENANT_ID,
+          vendor_id: p.vendorId,
+          name: p.name,
+          price: p.price,
+          sort_order: p.sortOrder,
+          is_active: true,
+        }).select('id').single();
+        if (pErr) throw pErr;
+        const realId = pd.id;
+        await sbClient.from('inventory').insert({
+          tenant_id: TENANT_ID,
+          product_id: realId,
+          current_stock: 0,
+          ideal_stock: p.minStock,
+        });
+        const local = DATA.products.find(x => x.id === p.id);
+        if (local) local.id = realId;
+      } catch(e) { console.error('商品CSVインポート失敗:', e); }
+    }
+    saveData(DATA);
+  }
+}
+
 // 商品編集
+let _editActualMonthly = null;
+
 function openProductEdit(id) {
   const p = DATA.products.find(x => x.id === id);
   if (!p) return;
@@ -1825,7 +2031,34 @@ function openProductEdit(id) {
   document.getElementById('editPrice').value = p.price || 0;
   document.getElementById('editMonthly').value = p.monthlyConsumption || 0;
   document.getElementById('editSeasonal').value = p.seasonalFactor || 1;
+
+  // P4: 直近6ヶ月の消費量実績を計算
+  const sixMonthsAgo = new Date();
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+  const recentHistory = DATA.orderHistory.filter(h =>
+    h.productId === id && new Date(h.date) >= sixMonthsAgo
+  );
+  const totalQty = recentHistory.reduce((s, h) => s + (h.quantity || 0), 0);
+  const statEl = document.getElementById('editActualStat');
+  const useBtn = document.getElementById('useActualBtn');
+  if (totalQty > 0) {
+    const monthly = totalQty / 6;
+    _editActualMonthly = monthly;
+    statEl.textContent = `実績: 月${monthly.toFixed(1)}個（直近6ヶ月 計${totalQty}個）`;
+    useBtn.style.display = '';
+  } else {
+    _editActualMonthly = null;
+    statEl.textContent = '実績: データなし（直近6ヶ月）';
+    useBtn.style.display = 'none';
+  }
+
   openModal('editProduct');
+}
+
+function useActualConsumption() {
+  if (_editActualMonthly !== null) {
+    document.getElementById('editMonthly').value = _editActualMonthly.toFixed(1);
+  }
 }
 
 async function saveProductEdit() {
@@ -2042,32 +2275,24 @@ async function confirmOrder() {
   if (!confirm(`${targetItems.length}件の発注を確定しますか？`)) return;
 
   const now = new Date().toISOString();
-  const todayStr = new Date(now).toLocaleDateString('ja-JP');
+  const todayStr = toJSTDateKey(new Date(now));
   const checklistItems = [];
   targetItems.forEach(item => {
     const p = DATA.products.find(x => x.id === item.productId);
     if (!p) return;
-    // 同日に同商品の既存エントリがあれば数量を加算
-    const existing = DATA.orderHistory.find(h =>
-      h.productId === item.productId &&
-      new Date(h.date).toLocaleDateString('ja-JP') === todayStr
-    );
-    if (existing) {
-      existing.quantity += item.quantity;
-      existing.price = p.price || 0;
-    } else {
-      DATA.orderHistory.push({
-        id: uid(),
-        productId: item.productId,
-        vendorId: p.vendorId,
-        productName: p.name,
-        vendorName: DATA.vendors.find(v => v.id === p.vendorId)?.name || '',
-        date: now,
-        quantity: item.quantity,
-        stockAtOrder: p.stock,
-        price: p.price || 0,
-      });
-    }
+    // P3: ローカルマージ廃止。常に新規エントリをローカルに追加し、
+    //     サーバー側RPCがマージ済み行を返したら差し替える。
+    DATA.orderHistory.push({
+      id: uid(),
+      productId: item.productId,
+      vendorId: p.vendorId,
+      productName: p.name,
+      vendorName: DATA.vendors.find(v => v.id === p.vendorId)?.name || '',
+      date: now,
+      quantity: item.quantity,
+      stockAtOrder: p.stock,
+      price: p.price || 0,
+    });
     checklistItems.push({
       name: p.name,
       quantity: item.quantity,
@@ -2084,9 +2309,10 @@ async function confirmOrder() {
     selectedOrderVendorIds = null;
   }
   saveData(DATA);
+  window._lastChecklistItems = checklistItems;
   showChecklist(checklistItems);
 
-  // Supabase: confirm_order RPC
+  // Supabase: confirm_order RPC（サーバー側でマージし返り値でローカル履歴を差し替え）
   if (sbClient && isOnline) {
     try {
       const rpcItems = targetItems.map(item => {
@@ -2098,11 +2324,34 @@ async function confirmOrder() {
           stock_at_order: p?.stock ?? 0,
         };
       });
-      const { error } = await sbClient.rpc('confirm_order', {
+      const { data: mergedRows, error } = await sbClient.rpc('confirm_order', {
         p_tenant_id: TENANT_ID,
         p_items: rpcItems,
       });
-      if (error) console.error('confirm_order失敗:', error);
+      if (error) {
+        console.error('confirm_order失敗:', error);
+      } else if (mergedRows && Array.isArray(mergedRows)) {
+        // ローカルに追加した仮エントリ（当日分）をサーバーのマージ済み行で置換
+        DATA.orderHistory = DATA.orderHistory.filter(h =>
+          !confirmedIds.has(h.productId) ||
+          toJSTDateKey(new Date(h.date)) !== todayStr
+        );
+        mergedRows.forEach(row => {
+          const p = DATA.products.find(x => x.id === row.productId);
+          DATA.orderHistory.push({
+            id: row.id,
+            productId: row.productId,
+            vendorId: row.vendorId,
+            productName: p?.name || '',
+            vendorName: DATA.vendors.find(v => v.id === row.vendorId)?.name || '',
+            date: row.date,
+            quantity: row.quantity,
+            stockAtOrder: row.stockAtOrder,
+            price: p?.price || 0,
+          });
+        });
+        saveData(DATA);
+      }
     } catch(e) {
       console.error('confirm_order失敗:', e);
     }
@@ -2228,7 +2477,7 @@ function copyOrderText() {
 // Product Management
 // ============================
 
-async function addProduct() {
+async function addProduct(andNext = false) {
   const vendorId = document.getElementById('addVendor').value;
   const name = document.getElementById('addName').value.trim();
   const stock = parseInt(document.getElementById('addStock').value) || 0;
@@ -2248,10 +2497,19 @@ async function addProduct() {
   const newProduct = { id: newId, vendorId, name, stock, minStock, sortOrder, active: true, price: 0, monthlyConsumption: 0, seasonalFactor: 1 };
   DATA.products.push(newProduct);
   saveData(DATA);
-  closeModal('addProduct');
-  document.getElementById('addName').value = '';
-  document.getElementById('addStock').value = '0';
-  document.getElementById('addMinStock').value = '1';
+
+  if (andNext) {
+    // 名前だけリセット・仕入先・最低在庫は保持
+    document.getElementById('addName').value = '';
+    document.getElementById('addStock').value = '0';
+    showToast(`「${name}」を追加しました`);
+    document.getElementById('addName').focus();
+  } else {
+    closeModal('addProduct');
+    document.getElementById('addName').value = '';
+    document.getElementById('addStock').value = '0';
+    document.getElementById('addMinStock').value = '1';
+  }
   currentVendorId = vendorId;
   render();
 
@@ -2570,6 +2828,12 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+// JST固定の YYYY-MM-DD キーを返す（グループ化・比較用。表示はtoLocaleDateString使用）
+function toJSTDateKey(date) {
+  const d = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  return d.toISOString().slice(0, 10);
+}
+
 function esc(str) {
   const d = document.createElement('div');
   d.textContent = str;
@@ -2633,120 +2897,123 @@ function checkAllStocktaking() {
   if (allBtn) allBtn.textContent = allChecked ? '全チェック' : '全解除';
 }
 
+
 // ============================
-// 仕入先A 並び順管理
+// P7: D&D ソート
 // ============================
-function tokyoRibiyoSortKey(name) {
-  const n = name.trim();
+let _dndState = null;
 
-  // 1. ヘアマニキュア系
-  const maniOrder = ['L-B','M-B','D-B','L-N','M-N','D-N','M-AB','Black','S.Gray','Clear','P-N'];
-  const mi = maniOrder.findIndex(s => n === s);
-  if (mi >= 0) return 100000 + mi * 10;
+function dndStart(e, pid) {
+  e.preventDefault();
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  const card = document.getElementById('card-' + pid);
+  if (!card) return;
+  card.classList.add('dnd-dragging');
+  if (navigator.vibrate) navigator.vibrate(25);
 
-  // 2. パーマ剤
-  if (n.includes('コスメV'))        return 200010;
-  if (n.includes('コスメEX'))       return 200020;
-  if (n.includes('プリズムプラスH')) return 200030;
-  if (n.includes('プリズムプラスM')) return 200040;
-  if (n.includes('コスメ') || n.includes('プリズムプラス')) return 200050;
-  if (n === 'アフターローション')    return 200060;
+  _dndState = { pid, startY: clientY, currentTargetPid: null };
 
-  // 2.5. クリア系（カラー剤チェックより先に判定）
-  if (n.includes('クリア')) {
-    if (n.includes('アッシュ')) return 800010;
-    if (n.includes('ピンク'))   return 800020;
-    if (n.includes('アプリコット')) return 800030;
-    return 800000;
-  }
-
-  // 2.6. cone./conc.系（カラー剤チェックより先に判定）
-  if (n.includes('cone.') || n.includes('conc.')) {
-    if (n.includes('グレイ')) return 810010;
-    if (n.includes('ローズ')) return 810020;
-    return 810000;
-  }
-
-  // 3. カラー剤（数字+色名）
-  const colorOrder = ['ナチュラル','マット','アッシュ','グレイ','バイオレット','ピンク','レッド','オレンジ'];
-  const ci = colorOrder.findIndex(c => n.includes(c));
-  if (ci >= 0) {
-    const numMatch = n.match(/^(\d+)/);
-    const num = numMatch ? parseInt(numMatch[1]) : 0;
-    const numOrder = [14,12,10,8,6,5,4,3,2,1];
-    const ni = numOrder.indexOf(num);
-    return 300000 + ci * 1000 + (ni >= 0 ? ni * 10 : 990);
-  }
-
-  // 4. アルファベット系
-  const alphaOrder = ['N','M','A','G','V','P','OR','R'];
-  for (let ai = 0; ai < alphaOrder.length; ai++) {
-    const regex = new RegExp('^' + alphaOrder[ai] + '\\d+$');
-    if (regex.test(n)) {
-      const numMatch = n.match(/(\d+)/);
-      const num = numMatch ? parseInt(numMatch[1]) : 0;
-      const numOrder = [14,12,10,8,6,5,4,3,2,1];
-      const ni = numOrder.indexOf(num);
-      return 400000 + ai * 1000 + (ni >= 0 ? ni * 10 : 990);
-    }
-  }
-
-  // 5. OX系
-  if (n.includes('OX') && !n.includes('クオライン')) return 500000;
-
-  // 6. ティアーズ・ブリーチ
-  if (n.includes('ティアーズ')) return 600000;
-  if (n === 'ブリーチ') return 610000;
-
-  // 7. カラーストーリー（タマリス、NB）
-  if (n.includes('タマリス') || n.match(/^\d*NB$/)) return 700000;
-
-  // 8. （クリア系・cone.系は2.5/2.6で処理済み）
-
-  // 9. クオライン系・アジャスト
-  if (n.includes('クオライン') || n.includes('アジャスト')) return 900000;
-
-  return 999999;
-}
-
-async function autoApplySortOrder() {
-  if (localStorage.getItem('sort_order_version') === SORT_ORDER_VERSION) return;
-  await applyTokyoRibiyoSortOrder(true);
-  localStorage.setItem('sort_order_version', SORT_ORDER_VERSION);
-}
-
-async function applyTokyoRibiyoSortOrder(silent = false) {
-  const vendor = DATA.vendors.find(v => {
-    const prods = DATA.products.filter(p => p.vendorId === v.id && p.active !== false);
-    return prods.some(p => p.name && (p.name.includes('ナチュラル') || p.name.includes('conc.') || p.name.includes('cone.') || p.name.includes('クオライン') || p.name.includes('ティアーズ')));
-  });
-  if (!vendor) { if (!silent) showToast('対象の仕入先が見つかりません'); return; }
-  const products = DATA.products.filter(p => p.vendorId === vendor.id && p.active !== false);
-  if (products.length === 0) { if (!silent) showToast('商品が見つかりません'); return; }
-  products.sort((a, b) => tokyoRibiyoSortKey(a.name) - tokyoRibiyoSortKey(b.name));
-  products.forEach((p, i) => { p.sortOrder = (i + 1) * 10; });
-  saveData(DATA);
-  if (sbClient) {
-    const results = await Promise.all(
-      products.map(p =>
-        sbClient.from('products').update({ sort_order: p.sortOrder }).eq('id', p.id).eq('tenant_id', TENANT_ID)
-      )
-    );
-    const errors = results.filter(r => r.error);
-    if (!silent) {
-      if (errors.length > 0) {
-        console.error('sort_order更新エラー:', errors[0].error);
-        showToast(`更新失敗: ${errors.length}件エラー（${products.length - errors.length}件成功）`);
-      } else {
-        showToast('並び順を更新しました（' + products.length + '件）');
+  const onMove = ev => {
+    ev.preventDefault();
+    if (!_dndState) return;
+    const y = ev.touches ? ev.touches[0].clientY : ev.clientY;
+    const all = [...document.querySelectorAll('#content .card[data-pid]')];
+    let targetEl = null, targetPid = null, isAbove = false;
+    for (const c of all) {
+      const rect = c.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (c.dataset.pid === pid) continue;
+      if (Math.abs(y - mid) < rect.height * 0.6) {
+        targetEl = c; targetPid = c.dataset.pid;
+        isAbove = y < mid;
+        break;
       }
-      render();
-      closeModal('settings');
     }
-  } else if (!silent) {
-    showToast('並び順を更新しました（ローカルのみ）');
+    all.forEach(c => c.classList.remove('dnd-target-above', 'dnd-target-below'));
+    if (targetEl) {
+      targetEl.classList.add(isAbove ? 'dnd-target-above' : 'dnd-target-below');
+      _dndState.currentTargetPid = targetPid;
+      _dndState.targetAbove = isAbove;
+    } else {
+      _dndState.currentTargetPid = null;
+    }
+  };
+
+  const onEnd = async () => {
+    document.removeEventListener('touchmove', onMove);
+    document.removeEventListener('touchend', onEnd);
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onEnd);
+    if (!_dndState) return;
+    const { pid: srcPid, currentTargetPid, targetAbove } = _dndState;
+    _dndState = null;
+
+    document.querySelectorAll('#content .card[data-pid]').forEach(c =>
+      c.classList.remove('dnd-dragging', 'dnd-target-above', 'dnd-target-below')
+    );
+
+    if (!currentTargetPid || currentTargetPid === srcPid) return;
+
+    const vendorId = currentVendorId;
+    const products = DATA.products
+      .filter(p => p.vendorId === vendorId && p.active !== false)
+      .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+
+    const srcIdx = products.findIndex(p => p.id === srcPid);
+    const tgtIdx = products.findIndex(p => p.id === currentTargetPid);
+    if (srcIdx < 0 || tgtIdx < 0) return;
+
+    const [moved] = products.splice(srcIdx, 1);
+    const insertAt = srcIdx < tgtIdx
+      ? (targetAbove ? tgtIdx - 1 : tgtIdx)
+      : (targetAbove ? tgtIdx : tgtIdx + 1);
+    products.splice(Math.max(0, insertAt), 0, moved);
+    products.forEach((p, i) => { p.sortOrder = (i + 1) * 10; });
+    saveData(DATA);
     render();
-    closeModal('settings');
+    if (sbClient && isOnline) {
+      try {
+        await Promise.all(products.map(p =>
+          sbClient.from('products').update({ sort_order: p.sortOrder }).eq('id', p.id).eq('tenant_id', TENANT_ID)
+        ));
+        lastSyncTime = new Date(); updateSyncDisplay();
+      } catch(err) { console.error('D&D sort保存失敗:', err); }
+    }
+  };
+
+  document.addEventListener('touchmove', onMove, { passive: false });
+  document.addEventListener('touchend', onEnd, { once: true });
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onEnd, { once: true });
+}
+
+// 五十音順一括整列（P7b）
+async function sortAllProductsAiueo() {
+  if (!confirm('全仕入先の商品を五十音順に並べ直しますか？現在の並び順は上書きされます。')) return;
+  const vendors = DATA.vendors;
+  const allUpdated = [];
+  vendors.forEach(v => {
+    const products = DATA.products
+      .filter(p => p.vendorId === v.id && p.active !== false)
+      .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+    products.forEach((p, i) => { p.sortOrder = (i + 1) * 10; allUpdated.push(p); });
+  });
+  saveData(DATA);
+  render();
+  closeModal('settings');
+  if (sbClient && isOnline) {
+    try {
+      await Promise.all(allUpdated.map(p =>
+        sbClient.from('products').update({ sort_order: p.sortOrder }).eq('id', p.id).eq('tenant_id', TENANT_ID)
+      ));
+      showToast(`五十音順に整列しました（${allUpdated.length}件）`);
+      lastSyncTime = new Date(); updateSyncDisplay();
+    } catch(err) {
+      console.error('五十音整列保存失敗:', err);
+      showToast('ローカルのみ整列しました');
+    }
+  } else {
+    showToast(`五十音順に整列しました（${allUpdated.length}件）`);
   }
 }
 
@@ -2755,7 +3022,7 @@ function forceUpdate() {
   if ('caches' in window) {
     caches.keys().then(names => names.forEach(name => caches.delete(name)));
   }
-  location.reload(true);
+  location.reload();
 }
 
 // ============================
