@@ -693,8 +693,8 @@
     </div>
     <!-- OTPコード入力欄（コード送信後に表示） -->
     <div id="otpCodeSection" style="display:none;margin-top:20px;padding-top:20px;border-top:1px solid var(--border);">
-      <div style="font-size:13px;color:var(--text-sub);margin-bottom:8px;text-align:center;">メールに届いた6桁の数字を入力</div>
-      <input class="form-input" id="otpCodeInput" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="123456" style="text-align:center;letter-spacing:8px;font-size:20px;margin-bottom:10px;" onkeydown="if(event.key==='Enter')doVerifyCode()">
+      <div style="font-size:13px;color:var(--text-sub);margin-bottom:8px;text-align:center;">メールに届いた数字（6〜8桁）を入力</div>
+      <input class="form-input" id="otpCodeInput" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="10" placeholder="12345678" style="text-align:center;letter-spacing:6px;font-size:20px;margin-bottom:10px;" onkeydown="if(event.key==='Enter')doVerifyCode()">
       <button class="action-btn" onclick="doVerifyCode()" style="margin-bottom:8px;">コードで認証</button>
       <div style="text-align:center;">
         <button style="background:none;border:none;color:var(--text-sub);font-size:12px;cursor:pointer;text-decoration:underline;" onclick="doSendCode()">コードを再送</button>
@@ -999,7 +999,7 @@ async function doSendCode() {
 async function doVerifyCode() {
   const token = (document.getElementById('otpCodeInput').value || '').trim();
   const errEl = document.getElementById('loginError');
-  if (!token || token.length !== 6) { errEl.style.color = 'var(--danger)'; errEl.textContent = '6桁のコードを入力してください'; return; }
+  if (!token || token.length < 6) { errEl.style.color = 'var(--danger)'; errEl.textContent = 'メールに届いたコードを入力してください'; return; }
   if (!_otpEmail) { errEl.textContent = '先にメールアドレスを入力してコードを送信してください'; return; }
   errEl.style.color = 'var(--text-sub)';
   errEl.textContent = '確認中...';
