@@ -689,7 +689,16 @@
     <div id="loginError" style="color:var(--danger);font-size:13px;margin-bottom:12px;text-align:center;min-height:18px;"></div>
     <button id="loginBtn" class="action-btn" onclick="doAuthAction()">ログイン</button>
     <div id="signinOnly" style="margin-top:12px;text-align:center;">
-      <button id="magicLinkBtn" style="background:none;border:none;color:var(--primary);font-size:13px;cursor:pointer;text-decoration:underline;" onclick="doMagicLink()">パスワードなしでメールリンクでログイン</button>
+      <button id="magicLinkBtn" style="background:none;border:none;color:var(--primary);font-size:13px;cursor:pointer;text-decoration:underline;" onclick="doSendCode()">パスワードなしで6桁コードでログイン</button>
+    </div>
+    <!-- OTPコード入力欄（コード送信後に表示） -->
+    <div id="otpCodeSection" style="display:none;margin-top:20px;padding-top:20px;border-top:1px solid var(--border);">
+      <div style="font-size:13px;color:var(--text-sub);margin-bottom:8px;text-align:center;">メールに届いた6桁の数字を入力</div>
+      <input class="form-input" id="otpCodeInput" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="123456" style="text-align:center;letter-spacing:8px;font-size:20px;margin-bottom:10px;" onkeydown="if(event.key==='Enter')doVerifyCode()">
+      <button class="action-btn" onclick="doVerifyCode()" style="margin-bottom:8px;">コードで認証</button>
+      <div style="text-align:center;">
+        <button style="background:none;border:none;color:var(--text-sub);font-size:12px;cursor:pointer;text-decoration:underline;" onclick="doSendCode()">コードを再送</button>
+      </div>
     </div>
   </div>
 </div>
@@ -960,7 +969,9 @@ async function doAuthAction() {
   }
 }
 
-async function doMagicLink() {
+let _otpEmail = '';
+
+async function doSendCode() {
   const email = (document.getElementById('loginEmail').value || '').trim();
   const errEl = document.getElementById('loginError');
   const btn = document.getElementById('magicLinkBtn');
@@ -969,16 +980,40 @@ async function doMagicLink() {
   btn.textContent = '送信中...';
   errEl.textContent = '';
   try {
-    const { error } = await sbClient.auth.signInWithOtp({ email, options: { emailRedirectTo: 'https://mini2kitsune.github.io/inventory/inventory.html' } });
+    const { error } = await sbClient.auth.signInWithOtp({ email, options: { shouldCreateUser: false } });
     if (error) throw error;
+    _otpEmail = email;
+    document.getElementById('otpCodeSection').style.display = 'block';
     errEl.style.color = 'var(--success)';
-    errEl.textContent = 'ログインリンクをメールに送りました。メールアプリで確認してください。';
+    errEl.textContent = '6桁コードをメールに送りました。メールの本文にある数字を入力してください（リンクは押さないで）';
+    setTimeout(() => { document.getElementById('otpCodeInput').focus(); }, 100);
   } catch(e) {
     errEl.style.color = 'var(--danger)';
     errEl.textContent = e.message || '送信に失敗しました';
   } finally {
     btn.disabled = false;
-    btn.textContent = 'パスワードなしでメールリンクでログイン';
+    btn.textContent = 'パスワードなしで6桁コードでログイン';
+  }
+}
+
+async function doVerifyCode() {
+  const token = (document.getElementById('otpCodeInput').value || '').trim();
+  const errEl = document.getElementById('loginError');
+  if (!token || token.length !== 6) { errEl.style.color = 'var(--danger)'; errEl.textContent = '6桁のコードを入力してください'; return; }
+  if (!_otpEmail) { errEl.textContent = '先にメールアドレスを入力してコードを送信してください'; return; }
+  errEl.style.color = 'var(--text-sub)';
+  errEl.textContent = '確認中...';
+  try {
+    const { error } = await sbClient.auth.verifyOtp({ email: _otpEmail, token, type: 'email' });
+    if (error) throw error;
+    errEl.style.color = 'var(--success)';
+    errEl.textContent = 'ログイン成功';
+  } catch(e) {
+    errEl.style.color = 'var(--danger)';
+    let msg = e.message || 'コードが違います';
+    if (/expired/i.test(msg)) msg = 'コードの有効期限が切れました。再送してください';
+    else if (/invalid/i.test(msg)) msg = 'コードが違います。メールをご確認ください';
+    errEl.textContent = msg;
   }
 }
 
