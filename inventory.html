@@ -1966,16 +1966,16 @@ async function duplicateProduct() {
 
 // 商品マスタCSVテンプレートダウンロード（P6c）
 function downloadProductCsvTemplate() {
-  const header = '仕入れ先,商品名,最低在庫数,単価';
-  const examples = DATA.vendors.slice(0, 2).flatMap(v =>
-    DATA.products.filter(p => p.vendorId === v.id && p.active !== false).slice(0, 2).map(p =>
-      `${v.name},${p.name},${p.minStock || 0},${p.price || 0}`
+  const header = '仕入れ先,商品名,最低在庫数,単価,月間消費量';
+  const rows = DATA.vendors.flatMap(v =>
+    DATA.products.filter(p => p.vendorId === v.id && p.active !== false).map(p =>
+      `${v.name},${p.name},${p.minStock || 0},${p.price || 0},${p.monthlyConsumption || 0}`
     )
   );
-  if (examples.length === 0) {
-    DATA.vendors.slice(0, 1).forEach(v => examples.push(`${v.name},新商品名,1,0`));
+  if (rows.length === 0) {
+    DATA.vendors.slice(0, 1).forEach(v => rows.push(`${v.name},新商品名,1,0,0`));
   }
-  const csv = [header, ...examples].join('\n');
+  const csv = [header, ...rows].join('\n');
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
   a.download = '商品マスタインポート用.csv'; a.click();
@@ -1991,17 +1991,26 @@ async function importProductCsv(event) {
   if (lines.length < 2) { showToast('データがありません'); return; }
 
   const newProducts = [];
+  const updatedProducts = [];
   const errors = [];
 
   for (let i = 1; i < lines.length; i++) {
     const cols = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
     if (cols.length < 2) { errors.push(`行${i+1}: 列数不足`); continue; }
-    const [vendorName, productName, minStockStr = '1', priceStr = '0'] = cols;
+    const [vendorName, productName, minStockStr = '1', priceStr = '0', monthlyStr = ''] = cols;
     if (!vendorName || !productName) { errors.push(`行${i+1}: データ不正`); continue; }
     const vendor = DATA.vendors.find(v => v.name === vendorName);
     if (!vendor) { errors.push(`行${i+1}: 仕入れ先「${vendorName}」が見つかりません`); continue; }
     const exists = DATA.products.find(p => p.vendorId === vendor.id && p.name === productName && p.active !== false);
-    if (exists) { errors.push(`行${i+1}: 「${productName}」は既に存在します（スキップ）`); continue; }
+    if (exists) {
+      if (monthlyStr !== '') {
+        exists.monthlyConsumption = parseFloat(monthlyStr) || 0;
+        updatedProducts.push(exists);
+      } else {
+        errors.push(`行${i+1}: 「${productName}」は既に存在します（スキップ）`);
+      }
+      continue;
+    }
     const maxSort = Math.max(0, ...DATA.products.filter(p => p.vendorId === vendor.id).map(p => p.sortOrder || 0));
     newProducts.push({
       id: uid(),
@@ -2012,7 +2021,7 @@ async function importProductCsv(event) {
       price: parseInt(priceStr) || 0,
       sortOrder: maxSort + 10 + newProducts.filter(np => np.vendorId === vendor.id).length * 10,
       active: true,
-      monthlyConsumption: 0,
+      monthlyConsumption: monthlyStr !== '' ? (parseFloat(monthlyStr) || 0) : 0,
       seasonalFactor: 1,
     });
   }
@@ -2020,12 +2029,15 @@ async function importProductCsv(event) {
   if (errors.length > 0) {
     alert('以下の行でエラーがありました（その他は正常に取り込みます）:\n' + errors.join('\n'));
   }
-  if (newProducts.length === 0) { showToast('取り込める商品がありませんでした'); return; }
+  if (newProducts.length === 0 && updatedProducts.length === 0) { showToast('取り込める商品がありませんでした'); return; }
 
   newProducts.forEach(p => DATA.products.push(p));
   saveData(DATA);
   render();
-  showToast(`${newProducts.length}件の商品を取り込みました`);
+  const msgs = [];
+  if (newProducts.length > 0) msgs.push(`${newProducts.length}件追加`);
+  if (updatedProducts.length > 0) msgs.push(`${updatedProducts.length}件の月間消費量を更新`);
+  showToast(msgs.join('・') + 'しました');
 
   if (sbClient && isOnline) {
     for (const p of newProducts) {
@@ -2045,10 +2057,17 @@ async function importProductCsv(event) {
           product_id: realId,
           current_stock: 0,
           ideal_stock: p.minStock,
+          monthly_consumption: p.monthlyConsumption,
         });
         const local = DATA.products.find(x => x.id === p.id);
         if (local) local.id = realId;
       } catch(e) { console.error('商品CSVインポート失敗:', e); }
+    }
+    for (const p of updatedProducts) {
+      try {
+        await sbClient.from('inventory').update({ monthly_consumption: p.monthlyConsumption })
+          .eq('product_id', p.id).eq('tenant_id', TENANT_ID);
+      } catch(e) { console.error('月間消費量更新失敗:', e); }
     }
     saveData(DATA);
   }
