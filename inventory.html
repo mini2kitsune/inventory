@@ -2235,41 +2235,43 @@ function getToelReferenceFamily(product) {
 }
 
 function getOldVendorReference(targetProduct) {
-  const sourceVendor = DATA.vendors.find(v => v.name === '東京理美容商会');
-  if (!sourceVendor) return null;
+  const sourceVendor = DATA.vendors.find(v => v.name === '東京理美容商会' || v.name === '東京理美容' || v.name.includes('東京理美容'));
+  if (!sourceVendor) return { status: 'vendor-missing' };
 
   const targetCode = normalizeReferenceName(targetProduct?.name)
     .replace(/（トエル (?:ファッション|白髪染め)）$/, '')
     .trim();
   const exactMapping = toelReferenceSourceToTarget[targetCode];
   const targetFamily = getToelReferenceFamily(targetProduct);
+  if (!exactMapping && (!targetFamily || !(targetFamily in toelReferenceColorFamilies))) {
+    return { status: 'mapping-missing' };
+  }
+  const mappingLabel = exactMapping
+    ? `フジシン ${exactMapping.cc}cc → ${targetCode}`
+    : `${Object.entries(toelReferenceColorFamilies).find(([family]) => family === targetFamily)?.[1][0] || targetFamily}系 → ${targetFamily}系`;
   const sourceProducts = DATA.products.filter(p => {
     if (p.vendorId !== sourceVendor.id) return false;
     if (exactMapping) return getFujishinCc(p.name) === exactMapping.cc;
 
-    const family = targetFamily;
-    if (!family || !(family in toelReferenceColorFamilies)) return false;
     const sourceName = normalizeReferenceName(p.name);
-    const familyWords = toelReferenceColorFamilies[family];
+    const familyWords = toelReferenceColorFamilies[targetFamily];
     const hasWord = familyWords.some(word => sourceName.includes(word));
-    const hasCode = new RegExp(`(?:^|[^A-Z0-9])${family}(?:$|[^A-Z0-9])`).test(sourceName);
+    const hasCode = new RegExp(`(?:^|[^A-Z0-9])${targetFamily}(?:$|[^A-Z0-9])`).test(sourceName);
     return hasWord || hasCode;
   });
   const sourceProductIds = new Set(sourceProducts.map(p => p.id));
-  if (!sourceProductIds.size) return null;
+  if (!sourceProductIds.size) return { status: 'products-missing', mappingLabel };
 
   const cutoff = new Date();
   cutoff.setMonth(cutoff.getMonth() - 6);
   const rows = DATA.orderHistory.filter(h => h.vendorId === sourceVendor.id && sourceProductIds.has(h.productId) && new Date(h.date) >= cutoff);
   const productIds = new Set(rows.map(h => h.productId));
   const quantity = rows.reduce((sum, h) => sum + (Number(h.quantity) || 0), 0);
-  if (!productIds.size || quantity <= 0) return null;
+  if (!productIds.size || quantity <= 0) return { status: 'history-missing', mappingLabel, productCount: sourceProducts.length };
 
   const sourceNames = [...productIds].map(id => DATA.products.find(p => p.id === id)?.name).filter(Boolean);
-  const mappingLabel = exactMapping
-    ? `フジシン ${exactMapping.cc}cc → ${targetCode}`
-    : `${Object.entries(toelReferenceColorFamilies).find(([family]) => family === targetFamily)?.[1][0] || targetFamily}系 → ${targetFamily}系`;
   return {
+    status: 'ok',
     quantity,
     productCount: productIds.size,
     monthlyPerProduct: quantity / 6 / productIds.size,
@@ -2279,13 +2281,13 @@ function getOldVendorReference(targetProduct) {
 }
 
 async function seedBlankToelReferenceValues() {
-  if (!sbClient || !isOnline) return 0;
+  if (!sbClient) return 0;
   const pending = [];
   DATA.products.forEach(product => {
     if (Number(product.monthlyConsumption) > 0) return;
     if (DATA.vendors.find(v => v.id === product.vendorId)?.name !== 'ミツイ' || !isToelProduct(product)) return;
     const reference = getOldVendorReference(product);
-    if (!reference || reference.monthlyPerProduct <= 0) return;
+    if (!reference || !Number.isFinite(reference.monthlyPerProduct) || reference.monthlyPerProduct <= 0) return;
     const monthly = Number(reference.monthlyPerProduct.toFixed(1));
     if (monthly <= 0) return;
     product.monthlyConsumption = monthly;
@@ -2330,13 +2332,19 @@ function openProductEdit(id) {
   const isToelAtMitsui = DATA.vendors.find(v => v.id === p.vendorId)?.name === 'ミツイ' && isToelProduct(p);
   const reference = isToelAtMitsui ? getOldVendorReference(p) : null;
   _editVendorReferenceMonthly = reference?.monthlyPerProduct ?? null;
-  if (isToelAtMitsui && reference) {
+  if (isToelAtMitsui && reference?.status === 'ok') {
     const referenceApplied = Number(p.monthlyConsumption) > 0
       && Math.abs(Number(p.monthlyConsumption) - reference.monthlyPerProduct) < 0.05;
     refStat.textContent = `対応: ${reference.mappingLabel}。参照元${reference.productCount}商品の直近6か月合計${reference.quantity}個 / 月平均${reference.monthlyPerProduct.toFixed(1)}個${referenceApplied ? '（商品に反映済み）' : ''}`;
     refBtn.style.display = referenceApplied ? 'none' : '';
   } else if (isToelAtMitsui) {
-    refStat.textContent = '対応する東京理美容商会商品の直近6か月発注履歴が見つかりません';
+    const referenceStatus = {
+      'vendor-missing': '仕入先「東京理美容商会」が登録されていません',
+      'mapping-missing': 'このトエル商品の対応表がありません',
+      'products-missing': `対応先（${reference.mappingLabel}）に一致する東京理美容商会商品が見つかりません`,
+      'history-missing': `対応先（${reference.mappingLabel}）の商品は${reference.productCount}件ありますが、直近6か月の発注履歴がありません`,
+    };
+    refStat.textContent = referenceStatus[reference?.status] || '対応する参考値が見つかりません';
     refBtn.style.display = 'none';
   } else {
     refStat.textContent = '';
