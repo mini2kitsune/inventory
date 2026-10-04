@@ -1387,16 +1387,33 @@ async function init() {
 // ============================
 
 const toelFashionColorCollator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+const toelFashionColorSeriesOrder = ['A', 'N', 'M', 'MT', 'V', 'P', 'R', 'LT'];
 
 function isToelFashionProduct(product) {
   return /（トエル ファッション）$/.test(product?.name || '')
     || /^トエル ファッション /.test(product?.name || '');
 }
 
+function getToelFashionColorCode(product) {
+  const name = product?.name || '';
+  const match = name.match(/^(.+?)（トエル ファッション）$/)
+    || name.match(/^トエル ファッション (.+)$/);
+  return (match?.[1] || name).replace(/[／]/g, '/').trim();
+}
+
 function compareProductDisplayOrder(a, b) {
   if (isToelFashionProduct(a) && isToelFashionProduct(b)) {
-    // 色番の英字系列（A, B, …, Mt など）を先に、系列内の番号を数値順にする。
-    return toelFashionColorCollator.compare(a.name, b.name);
+    const codeA = getToelFashionColorCode(a);
+    const codeB = getToelFashionColorCode(b);
+    const seriesA = codeA.match(/^[A-Za-z]+/)?.[0]?.toUpperCase() || '';
+    const seriesB = codeB.match(/^[A-Za-z]+/)?.[0]?.toUpperCase() || '';
+    const rankA = toelFashionColorSeriesOrder.indexOf(seriesA);
+    const rankB = toelFashionColorSeriesOrder.indexOf(seriesB);
+    const normalizedRankA = rankA < 0 ? toelFashionColorSeriesOrder.length : rankA;
+    const normalizedRankB = rankB < 0 ? toelFashionColorSeriesOrder.length : rankB;
+    if (normalizedRankA !== normalizedRankB) return normalizedRankA - normalizedRankB;
+    // 同じ系列では色番を数値順にし、未確認の系列も色番順にまとめる。
+    return toelFashionColorCollator.compare(codeA, codeB);
   }
   return (a.sortOrder || 0) - (b.sortOrder || 0);
 }
