@@ -585,10 +585,6 @@
     <div class="settings-section">
       <h3>仕入れ先管理</h3>
       <div id="vendorList"></div>
-      <div id="toelCatalogAction" class="settings-item" onclick="addToelProductsToMitsui()" style="display:none;">
-        <span class="settings-item-label" style="color:var(--accent-light);">＋ ミツイにトエルカラーを一括登録（全色・300円）</span>
-        <span class="settings-item-value">&gt;</span>
-      </div>
       <div class="settings-item" onclick="openAddVendor()">
         <span class="settings-item-label" style="color:var(--accent)">+ 仕入れ先を追加</span>
       </div>
@@ -2635,74 +2631,6 @@ function copyOrderText() {
 // Product Management
 // ============================
 
-const TOEL_FASHION_TONES = [
-  ['14', ['A', 'N']],
-  ['12', ['A', 'Mt', 'M', 'Be', 'N', 'P', 'V', 'FBe', 'BBe', 'PBe', 'CiL', 'Te']],
-  ['10', ['A', 'Mt', 'M', 'Be', 'N', 'P', 'V', 'FBe', 'BBe', 'PBe', 'CiL', 'Te']],
-  ['9', ['A', 'Mt', 'M', 'Be', 'N', 'R', 'P', 'V']],
-  ['8', ['A', 'Mt', 'M', 'Be', 'N', 'R', 'P', 'V', 'FBe', 'BBe', 'PBe', 'CiL', 'Te']],
-  ['7', ['A', 'Mt', 'M', 'Be', 'N', 'R', 'P', 'V']],
-  ['6', ['A', 'Mt', 'M', 'Be', 'N', 'R', 'P', 'V', 'FBe', 'BBe', 'PBe', 'CiL', 'Te']],
-  ['3', ['CiL']],
-];
-const TOEL_SPECIAL_TONES = ['Blue', 'Green', 'Yellow', 'Fog', 'CL', 'AC', 'Ow', 'Si'];
-const TOEL_PRODUCT_CATALOG = [
-  ...['NB/7', 'NB/5', 'NB/3', 'brN/11', 'LT'].map(tone => `${tone}（トエル 白髪染め）`),
-  ...TOEL_FASHION_TONES.flatMap(([level, tones]) => tones.map(tone => `${tone}/${level}（トエル ファッション）`)),
-  ...TOEL_SPECIAL_TONES.map(tone => `${tone}（トエル ファッション）`),
-];
-
-async function addToelProductsToMitsui() {
-  const vendor = DATA.vendors.find(v => v.name === 'ミツイ' && v.isActive !== false);
-  if (!vendor) { showToast('有効な仕入先「ミツイ」が見つかりません'); return; }
-  const existing = new Set(DATA.products.filter(p => p.vendorId === vendor.id).map(p => p.name));
-  const names = TOEL_PRODUCT_CATALOG.filter(name => !existing.has(name));
-  if (!names.length) { showToast('トエルカラーはすべて登録済みです'); return; }
-  const fashionCount = names.filter(name => name.includes('ファッション')).length;
-  const whiteCount = names.length - fashionCount;
-  if (!confirm(`ミツイにトエルカラーを追加します。\n白髪染め ${whiteCount}色・ファッションカラー ${fashionCount}色\n単価はすべて300円、初期在庫・最低在庫は0です。\n続けますか？`)) return;
-
-  const maxSort = Math.max(0, ...DATA.products.filter(p => p.vendorId === vendor.id).map(p => p.sortOrder || 0));
-  const products = names.map((name, index) => ({
-    id: uid(), vendorId: vendor.id, name, stock: 0, minStock: 0,
-    sortOrder: maxSort + (index + 1) * 10, active: true, price: 300,
-    monthlyConsumption: 0, seasonalFactor: 1,
-  }));
-
-  if (!sbClient || !isOnline) {
-    DATA.products.push(...products);
-    products.forEach(p => enqueueSync({ type: 'add_product', vendorId: p.vendorId, name: p.name, stock: 0, minStock: 0, sortOrder: p.sortOrder, price: 300, monthlyConsumption: 0, seasonalFactor: 1, tempId: p.id }));
-    saveData(DATA); render();
-    showToast(`${products.length}色を端末に登録。オンライン復帰時に同期します`);
-    return;
-  }
-
-  try {
-    const { data: inserted, error } = await sbClient.from('products').insert(products.map(p => ({
-      tenant_id: TENANT_ID, vendor_id: vendor.id, name: p.name, price: 300,
-      sort_order: p.sortOrder, is_active: true,
-    }))).select('id,name');
-    if (error) throw error;
-    const idByName = new Map((inserted || []).map(row => [row.name, row.id]));
-    products.forEach(p => { if (idByName.has(p.name)) p.id = idByName.get(p.name); });
-    const inventoryRows = products.filter(p => idByName.has(p.name)).map(p => ({
-      tenant_id: TENANT_ID, product_id: p.id, current_stock: 0, ideal_stock: 0,
-      monthly_consumption: 0, seasonal_factor: 1,
-    }));
-    const { error: inventoryError } = await sbClient.from('inventory').insert(inventoryRows);
-    if (inventoryError) throw inventoryError;
-    DATA.products.push(...products);
-    saveData(DATA); render(); renderSettingsVendors();
-    lastSyncTime = new Date(); updateSyncDisplay();
-    showToast(`${products.length}色をミツイに登録しました（単価300円）`);
-  } catch(e) {
-    console.error('トエルカラー一括登録失敗:', e);
-    await loadDataFromSupabase();
-    render(); renderSettingsVendors();
-    showToast('登録の一部でエラーが発生しました。商品一覧を確認してください');
-  }
-}
-
 async function addProduct(andNext = false) {
   const vendorId = document.getElementById('addVendor').value;
   const name = document.getElementById('addName').value.trim();
@@ -2921,8 +2849,6 @@ function renderSettingsVendors() {
         </div>
       </div>
     `).join('');
-  const toelAction = document.getElementById('toelCatalogAction');
-  if (toelAction) toelAction.style.display = DATA.vendors.some(v => v.name === 'ミツイ' && v.isActive !== false) ? 'flex' : 'none';
 }
 
 // ============================
