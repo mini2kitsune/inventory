@@ -2362,7 +2362,9 @@ function openProductEdit(id) {
   if (isToelAtMitsui && reference?.status === 'ok') {
     const referenceApplied = Number(p.monthlyConsumption) > 0
       && Math.abs(Number(p.monthlyConsumption) - reference.monthlyPerProduct) < 0.05;
-    refStat.textContent = `対応: ${reference.mappingLabel}。参照元${reference.productCount}商品の直近6か月合計${reference.quantity}個 / 月平均${reference.monthlyPerProduct.toFixed(1)}個${referenceApplied ? '（商品に反映済み）' : ''}`;
+    const sourceNames = reference.sourceNames?.length ? `（${reference.sourceNames.join('、')}）` : '';
+    const referenceMinimum = Math.max(1, Math.ceil(reference.monthlyPerProduct / 2));
+    refStat.textContent = `対応: ${reference.mappingLabel}。参照元${reference.productCount}商品${sourceNames}の直近6か月合計${reference.quantity}個 / 月平均${reference.monthlyPerProduct.toFixed(1)}個 / 最低在庫${referenceMinimum}個${referenceApplied ? '（商品に反映済み）' : ''}`;
     refBtn.style.display = referenceApplied ? 'none' : '';
   } else if (isToelAtMitsui) {
     const referenceStatus = {
