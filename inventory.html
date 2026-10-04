@@ -1276,6 +1276,7 @@ async function loadDataFromSupabase() {
     }));
 
     await seedBlankToelReferenceValues();
+    await seedBlankToelMinimumStocks();
 
     const activeVendors = DATA.vendors.filter(v => v.isActive !== false);
     if (activeVendors.length > 0 && !activeVendors.find(v => v.id === currentVendorId)) {
@@ -2315,6 +2316,43 @@ async function seedBlankToelReferenceValues() {
   }
   saveData(DATA);
   if (applied > 0) showToast(`東京理美容商会の対応参考値を${applied}商品に反映しました`);
+  return applied;
+}
+
+async function seedBlankToelMinimumStocks() {
+  if (!sbClient) return 0;
+  const pending = [];
+  DATA.products.forEach(product => {
+    if (Number(product.minStock) > 0) return;
+    if (DATA.vendors.find(v => v.id === product.vendorId)?.name !== 'ミツイ' || !isToelProduct(product)) return;
+    const monthlyConsumption = Number(product.monthlyConsumption) || 0;
+    if (monthlyConsumption <= 0) return;
+    // 月2回発注を目安に、最低在庫は平均月間消費量の半月分（最低1個）を予備として置く。
+    const minStock = Math.max(1, Math.ceil(monthlyConsumption / 2));
+    product.minStock = minStock;
+    pending.push({ product, minStock });
+  });
+  if (pending.length === 0) return 0;
+
+  let applied = 0;
+  for (const { product, minStock } of pending) {
+    try {
+      const { data, error } = await sbClient.from('inventory')
+        .update({ ideal_stock: minStock })
+        .eq('product_id', product.id)
+        .eq('tenant_id', TENANT_ID)
+        .select('product_id')
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) throw new Error('在庫レコードが見つかりません');
+      applied++;
+    } catch (e) {
+      product.minStock = 0;
+      console.error('トエル最低在庫数の自動設定失敗:', product.id, e);
+    }
+  }
+  saveData(DATA);
+  if (applied > 0) showToast(`月2回発注を目安に最低在庫数を${applied}商品へ設定しました`);
   return applied;
 }
 
