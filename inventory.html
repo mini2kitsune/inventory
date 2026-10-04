@@ -1275,6 +1275,8 @@ async function loadDataFromSupabase() {
       previousQuantity: h.previous_quantity,
     }));
 
+    await seedBlankToelReferenceValues();
+
     const activeVendors = DATA.vendors.filter(v => v.isActive !== false);
     if (activeVendors.length > 0 && !activeVendors.find(v => v.id === currentVendorId)) {
       currentVendorId = activeVendors[0].id;
@@ -2276,6 +2278,43 @@ function getOldVendorReference(targetProduct) {
   };
 }
 
+async function seedBlankToelReferenceValues() {
+  if (!sbClient || !isOnline) return 0;
+  const pending = [];
+  DATA.products.forEach(product => {
+    if (Number(product.monthlyConsumption) > 0) return;
+    if (DATA.vendors.find(v => v.id === product.vendorId)?.name !== 'ミツイ' || !isToelProduct(product)) return;
+    const reference = getOldVendorReference(product);
+    if (!reference || reference.monthlyPerProduct <= 0) return;
+    const monthly = Number(reference.monthlyPerProduct.toFixed(1));
+    if (monthly <= 0) return;
+    product.monthlyConsumption = monthly;
+    pending.push({ product, monthly });
+  });
+  if (pending.length === 0) return 0;
+
+  let applied = 0;
+  for (const { product, monthly } of pending) {
+    try {
+      const { data, error } = await sbClient.from('inventory')
+        .update({ monthly_consumption: monthly })
+        .eq('product_id', product.id)
+        .eq('tenant_id', TENANT_ID)
+        .select('product_id')
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) throw new Error('在庫レコードが見つかりません');
+      applied++;
+    } catch (e) {
+      product.monthlyConsumption = 0;
+      console.error('トエル参考値の自動反映失敗:', product.id, e);
+    }
+  }
+  saveData(DATA);
+  if (applied > 0) showToast(`東京理美容商会の対応参考値を${applied}商品に反映しました`);
+  return applied;
+}
+
 function openProductEdit(id) {
   const p = DATA.products.find(x => x.id === id);
   if (!p) return;
@@ -2292,8 +2331,10 @@ function openProductEdit(id) {
   const reference = isToelAtMitsui ? getOldVendorReference(p) : null;
   _editVendorReferenceMonthly = reference?.monthlyPerProduct ?? null;
   if (isToelAtMitsui && reference) {
-    refStat.textContent = `対応: ${reference.mappingLabel}。参照元${reference.productCount}商品の直近6か月合計${reference.quantity}個 / 1商品あたり月平均${reference.monthlyPerProduct.toFixed(1)}個`;
-    refBtn.style.display = '';
+    const referenceApplied = Number(p.monthlyConsumption) > 0
+      && Math.abs(Number(p.monthlyConsumption) - reference.monthlyPerProduct) < 0.05;
+    refStat.textContent = `対応: ${reference.mappingLabel}。参照元${reference.productCount}商品の直近6か月合計${reference.quantity}個 / 月平均${reference.monthlyPerProduct.toFixed(1)}個${referenceApplied ? '（商品に反映済み）' : ''}`;
+    refBtn.style.display = referenceApplied ? 'none' : '';
   } else if (isToelAtMitsui) {
     refStat.textContent = '対応する東京理美容商会商品の直近6か月発注履歴が見つかりません';
     refBtn.style.display = 'none';
