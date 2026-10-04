@@ -2187,8 +2187,9 @@ let _editActualMonthly = null;
 let _editVendorReferenceMonthly = null;
 
 function isToelProduct(product) {
-  return /（トエル (?:ファッション|白髪染め)）$/.test(product?.name || '')
-    || /^トエル (?:ファッション|白髪染め) /.test(product?.name || '');
+  const name = normalizeReferenceName(product?.name);
+  return /\s*\(トエル (?:ファッション|白髪染め)\)$/.test(name)
+    || /^トエル (?:ファッション|白髪染め) /.test(name);
 }
 
 const toelReferenceSourceToTarget = {
@@ -2225,7 +2226,7 @@ function getToelReferenceFamily(product) {
   if (vendor?.name !== 'ミツイ') return null;
 
   const name = normalizeReferenceName(product.name);
-  const canonicalName = name.match(/^(.+?)\(トエル (?:ファッション|白髪染め)\)$/)
+  const canonicalName = name.match(/^(.+?)\s*\(トエル (?:ファッション|白髪染め)\)$/)
     || name.match(/^トエル (?:ファッション|白髪染め) (.+)$/);
   if (!canonicalName) return null;
   const code = canonicalName[1].replace(/[／]/g, '/');
@@ -2238,7 +2239,7 @@ function getToelReferenceIdentity(product) {
   const family = getToelReferenceFamily(product);
   if (!family) return null;
   const name = normalizeReferenceName(product.name)
-    .replace(/\(トエル (?:ファッション|白髪染め)\)$/, '')
+    .replace(/\s*\(トエル (?:ファッション|白髪染め)\)$/, '')
     .trim();
   const code = name.replace(/[／]/g, '/');
   const match = code.match(new RegExp(`^${family}(?:\\s*/\\s*|\\s*)(\\d+)$`));
@@ -2266,7 +2267,7 @@ function getOldVendorReference(targetProduct) {
   if (!sourceVendor) return { status: 'vendor-missing' };
 
   const targetCode = normalizeReferenceName(targetProduct?.name)
-    .replace(/\(トエル (?:ファッション|白髪染め)\)$/, '')
+    .replace(/\s*\(トエル (?:ファッション|白髪染め)\)$/, '')
     .trim();
   const exactMapping = toelReferenceSourceToTarget[targetCode];
   const targetIdentity = getToelReferenceIdentity(targetProduct);
