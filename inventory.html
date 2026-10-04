@@ -1388,6 +1388,7 @@ async function init() {
 
 const toelFashionColorCollator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 const toelFashionColorSeriesOrder = ['A', 'N', 'M', 'MT', 'V', 'P', 'R', 'LT'];
+const manualSortOrderOffset = 1000000;
 
 function isToelFashionProduct(product) {
   return /（トエル ファッション）$/.test(product?.name || '')
@@ -1403,6 +1404,9 @@ function getToelFashionColorCode(product) {
 
 function compareProductDisplayOrder(a, b) {
   if (isToelFashionProduct(a) && isToelFashionProduct(b)) {
+    if ((a.sortOrder || 0) >= manualSortOrderOffset || (b.sortOrder || 0) >= manualSortOrderOffset) {
+      return (a.sortOrder || 0) - (b.sortOrder || 0);
+    }
     const codeA = getToelFashionColorCode(a);
     const codeB = getToelFashionColorCode(b);
     const seriesA = codeA.match(/^[A-Za-z]+/)?.[0]?.toUpperCase() || '';
@@ -3194,12 +3198,31 @@ function dndStart(e, pid) {
   card.classList.add('dnd-dragging');
   if (navigator.vibrate) navigator.vibrate(25);
 
-  _dndState = { pid, startY: clientY, currentTargetPid: null };
+  _dndState = { pid, startY: clientY, pointerY: clientY, currentTargetPid: null };
+  let autoScrollFrame = null;
+
+  const autoScroll = () => {
+    if (!_dndState) { autoScrollFrame = null; return; }
+    const y = _dndState.pointerY;
+    const edge = 84;
+    const distance = y < edge ? edge - y : y > window.innerHeight - edge ? y - (window.innerHeight - edge) : 0;
+    if (distance > 0) {
+      const step = Math.max(3, Math.min(14, Math.ceil(distance / 8)));
+      window.scrollBy(0, y < edge ? -step : step);
+      autoScrollFrame = requestAnimationFrame(autoScroll);
+    } else {
+      autoScrollFrame = null;
+    }
+  };
 
   const onMove = ev => {
     ev.preventDefault();
     if (!_dndState) return;
     const y = ev.touches ? ev.touches[0].clientY : ev.clientY;
+    _dndState.pointerY = y;
+    if (y < 84 || y > window.innerHeight - 84) {
+      if (autoScrollFrame === null) autoScrollFrame = requestAnimationFrame(autoScroll);
+    }
     const all = [...document.querySelectorAll('#content .card[data-pid]')];
     let targetEl = null, targetPid = null, isAbove = false;
     for (const c of all) {
@@ -3227,6 +3250,7 @@ function dndStart(e, pid) {
     document.removeEventListener('touchend', onEnd);
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onEnd);
+    if (autoScrollFrame !== null) cancelAnimationFrame(autoScrollFrame);
     if (!_dndState) return;
     const { pid: srcPid, currentTargetPid, targetAbove } = _dndState;
     _dndState = null;
@@ -3238,9 +3262,12 @@ function dndStart(e, pid) {
     if (!currentTargetPid || currentTargetPid === srcPid) return;
 
     const vendorId = currentVendorId;
-    const products = DATA.products
-      .filter(p => p.vendorId === vendorId && p.active !== false)
+    const renderedIds = [...document.querySelectorAll('#content .card[data-pid]')].map(c => c.dataset.pid);
+    const renderedProducts = renderedIds.map(id => DATA.products.find(p => p.id === id)).filter(Boolean);
+    const hiddenProducts = DATA.products
+      .filter(p => p.vendorId === vendorId && p.active === false)
       .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+    const products = [...renderedProducts, ...hiddenProducts];
 
     const srcIdx = products.findIndex(p => p.id === srcPid);
     const tgtIdx = products.findIndex(p => p.id === currentTargetPid);
@@ -3251,7 +3278,7 @@ function dndStart(e, pid) {
       ? (targetAbove ? tgtIdx - 1 : tgtIdx)
       : (targetAbove ? tgtIdx : tgtIdx + 1);
     products.splice(Math.max(0, insertAt), 0, moved);
-    products.forEach((p, i) => { p.sortOrder = (i + 1) * 10; });
+    products.forEach((p, i) => { p.sortOrder = manualSortOrderOffset + (i + 1) * 10; });
     saveData(DATA);
     render();
     if (sbClient && isOnline) {
@@ -3279,7 +3306,7 @@ async function sortAllProductsAiueo() {
     const products = DATA.products
       .filter(p => p.vendorId === v.id && p.active !== false)
       .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
-    products.forEach((p, i) => { p.sortOrder = (i + 1) * 10; allUpdated.push(p); });
+    products.forEach((p, i) => { p.sortOrder = manualSortOrderOffset + (i + 1) * 10; allUpdated.push(p); });
   });
   saveData(DATA);
   render();
