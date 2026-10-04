@@ -536,6 +536,8 @@
         <button id="useActualBtn" onclick="useActualConsumption()" style="display:none;padding:8px 12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--accent-light);font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;">実績を使う</button>
       </div>
       <div id="editActualStat" style="font-size:12px;color:var(--text-sub);margin-top:4px;min-height:16px;"></div>
+      <div id="editVendorReferenceStat" style="font-size:12px;color:var(--text-sub);margin-top:6px;"></div>
+      <button id="useVendorReferenceBtn" onclick="useVendorReferenceConsumption()" style="display:none;margin-top:6px;padding:8px 12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--accent-light);font-size:12px;font-weight:600;cursor:pointer;">旧仕入先の参考値を使う</button>
     </div>
     <div class="form-group">
       <label class="form-label">季節調整係数（通常は1.0）</label>
@@ -581,6 +583,10 @@
     <div class="settings-section">
       <h3>仕入れ先管理</h3>
       <div id="vendorList"></div>
+      <div id="toelCatalogAction" class="settings-item" onclick="addToelProductsToMitsui()" style="display:none;">
+        <span class="settings-item-label" style="color:var(--accent-light);">＋ ミツイにトエルカラーを一括登録（全色・300円）</span>
+        <span class="settings-item-value">&gt;</span>
+      </div>
       <div class="settings-item" onclick="openAddVendor()">
         <span class="settings-item-label" style="color:var(--accent)">+ 仕入れ先を追加</span>
       </div>
@@ -720,7 +726,7 @@
       <input class="form-input" id="vendorLeadTime" type="number" min="1" max="90" value="7">
     </div>
     <button class="action-btn" onclick="saveVendorEdit()" style="margin-top:8px" id="vendorSaveBtn">追加する</button>
-    <button id="vendorDeleteBtn" onclick="deleteVendorFromModal()" style="display:none;width:100%;margin-top:12px;padding:12px;background:none;border:1.5px solid var(--danger);border-radius:12px;color:var(--danger);font-size:14px;font-weight:600;cursor:pointer;">この仕入先を削除</button>
+    <button id="vendorDeleteBtn" onclick="deleteVendorFromModal()" style="display:none;width:100%;margin-top:12px;padding:12px;background:none;border:1.5px solid var(--danger);border-radius:12px;color:var(--danger);font-size:14px;font-weight:600;cursor:pointer;">この仕入先を非表示にする</button>
     <input type="hidden" id="editVendorId">
   </div>
 </div>
@@ -775,7 +781,7 @@ function getDefaultData() {
 }
 
 let DATA = loadDataFromCache() || getDefaultData();
-let currentVendorId = DATA.vendors[0]?.id || '';
+let currentVendorId = DATA.vendors.find(v => v.isActive !== false)?.id || '';
 let currentView = 'stock'; // stock | order | history
 let orderCart = []; // { productId, quantity }
 let selectedOrderVendorIds = null; // null = all selected
@@ -841,10 +847,10 @@ async function processSyncQueue() {
         case 'add_product': {
           const vrid = idMap[op.vendorId] || op.vendorId;
           const { data: pd, error: pe } = await sbClient.from('products').insert({
-            tenant_id: TENANT_ID, vendor_id: vrid, name: op.name, price: 0, sort_order: op.sortOrder, is_active: true,
+            tenant_id: TENANT_ID, vendor_id: vrid, name: op.name, price: op.price || 0, sort_order: op.sortOrder, is_active: true,
           }).select('id').single();
           if (!pe && pd) {
-            await sbClient.from('inventory').insert({ tenant_id: TENANT_ID, product_id: pd.id, current_stock: op.stock, ideal_stock: op.minStock });
+            await sbClient.from('inventory').insert({ tenant_id: TENANT_ID, product_id: pd.id, current_stock: op.stock, ideal_stock: op.minStock, monthly_consumption: op.monthlyConsumption || 0, seasonal_factor: op.seasonalFactor || 1 });
             idMap[op.tempId] = pd.id;
             const lp = DATA.products.find(p => p.id === op.tempId);
             if (lp) lp.id = pd.id;
@@ -872,6 +878,12 @@ async function processSyncQueue() {
         case 'edit_vendor': {
           const rid = idMap[op.id] || op.id;
           const { error } = await sbClient.from('vendors').update({ name: op.name, short_name: op.shortName, lead_time_days: op.leadTimeDays }).eq('id', rid).eq('tenant_id', TENANT_ID);
+          ok = !error;
+          break;
+        }
+        case 'set_vendor_active': {
+          const rid = idMap[op.id] || op.id;
+          const { error } = await sbClient.from('vendors').update({ is_active: op.isActive }).eq('id', rid).eq('tenant_id', TENANT_ID);
           ok = !error;
           break;
         }
@@ -1149,8 +1161,8 @@ async function loadDataFromSupabase() {
   if (!sbClient) return;
   try {
     const [vRes, pRes, iRes, ohRes, shRes] = await Promise.all([
-      sbClient.from('vendors').select('*').eq('tenant_id', TENANT_ID).eq('is_active', true).order('sort_order'),
-      sbClient.from('products').select('*').eq('tenant_id', TENANT_ID).eq('is_active', true).order('sort_order'),
+      sbClient.from('vendors').select('*').eq('tenant_id', TENANT_ID).order('sort_order'),
+      sbClient.from('products').select('*').eq('tenant_id', TENANT_ID).order('sort_order'),
       sbClient.from('inventory').select('*').eq('tenant_id', TENANT_ID),
       fetchAllOrderHistory(),
       sbClient.from('stocktaking_history').select('*').eq('tenant_id', TENANT_ID).order('stocktaking_date', { ascending: false }).limit(200),
@@ -1167,6 +1179,7 @@ async function loadDataFromSupabase() {
       shortName: v.short_name || v.name,
       sortOrder: v.sort_order,
       leadTimeDays: v.lead_time_days || 7,
+      isActive: v.is_active !== false,
     }));
 
     DATA.products = (pRes.data || []).map(p => {
@@ -1178,7 +1191,7 @@ async function loadDataFromSupabase() {
         stock: inv.current_stock ?? 0,
         minStock: inv.ideal_stock ?? 0,
         sortOrder: p.sort_order,
-        active: true,
+        active: p.is_active !== false,
         price: p.price || 0,
         monthlyConsumption: parseFloat(inv.monthly_consumption || 0),
         seasonalFactor: parseFloat(inv.seasonal_factor || 1),
@@ -1212,10 +1225,9 @@ async function loadDataFromSupabase() {
       previousQuantity: h.previous_quantity,
     }));
 
-    if (DATA.vendors.length > 0 && !currentVendorId) {
-      currentVendorId = DATA.vendors[0].id;
-    } else if (DATA.vendors.length > 0 && !DATA.vendors.find(v => v.id === currentVendorId)) {
-      currentVendorId = DATA.vendors[0].id;
+    const activeVendors = DATA.vendors.filter(v => v.isActive !== false);
+    if (activeVendors.length > 0 && !activeVendors.find(v => v.id === currentVendorId)) {
+      currentVendorId = activeVendors[0].id;
     }
 
     saveData(DATA);
@@ -1267,7 +1279,7 @@ async function init() {
     const cached = loadDataFromCache();
     if (cached && cached.products && cached.products.length > 0) {
       DATA = cached;
-      currentVendorId = DATA.vendors[0]?.id || '';
+      currentVendorId = DATA.vendors.find(v => v.isActive !== false)?.id || '';
       render();
     }
 
@@ -1297,7 +1309,7 @@ async function init() {
       }
       await loadDataFromSupabase();
       setupRealtime();
-      if (DATA.vendors.length > 0) currentVendorId = DATA.vendors[0].id;
+      if (DATA.vendors.some(v => v.isActive !== false)) currentVendorId = DATA.vendors.find(v => v.isActive !== false).id;
       render();
     } else if (event === 'SIGNED_OUT') {
       currentUser = null;
@@ -1332,7 +1344,7 @@ function render() {
 
 function renderVendorTabs() {
   const el = document.getElementById('vendorTabs');
-  el.innerHTML = DATA.vendors
+  el.innerHTML = DATA.vendors.filter(v => v.isActive !== false)
     .sort((a,b) => a.sortOrder - b.sortOrder)
     .map(v =>
       `<div class="nav-item${v.id === currentVendorId ? ' active' : ''}"
@@ -1353,7 +1365,7 @@ function renderContent() {
 
 function renderStockView(el) {
   const products = DATA.products
-    .filter(p => p.vendorId === currentVendorId && p.active !== false)
+    .filter(p => p.vendorId === currentVendorId && p.active !== false && DATA.vendors.find(v => v.id === p.vendorId)?.isActive !== false)
     .sort((a,b) => (a.sortOrder || 0) - (b.sortOrder || 0));
 
   if (products.length === 0) {
@@ -1430,8 +1442,9 @@ function renderOrderView(el) {
   const vendorGroups = {};
   orderCart.forEach(item => {
     const p = DATA.products.find(x => x.id === item.productId);
-    if (!p) return;
+    if (!p || p.active === false) return;
     const v = DATA.vendors.find(x => x.id === p.vendorId);
+    if (v?.isActive === false) return;
     const vId = v ? v.id : '__unknown';
     const vName = v ? v.name : '不明';
     if (!vendorGroups[vId]) vendorGroups[vId] = { name: vName, items: [] };
@@ -1440,6 +1453,10 @@ function renderOrderView(el) {
 
   // Initialize vendor selection (all selected by default)
   const cartVendorIds = Object.keys(vendorGroups);
+  if (cartVendorIds.length === 0) {
+    el.innerHTML = '<div class="empty"><div class="empty-icon">🛒</div><div class="empty-text">発注カゴの商品は非表示です<br>仕入先または商品を再表示してください</div></div>';
+    return;
+  }
   if (!selectedOrderVendorIds) {
     selectedOrderVendorIds = new Set(cartVendorIds);
   }
@@ -1884,7 +1901,7 @@ function generateOrderRecommendations() {
   orderCart = [];
   const now = new Date();
   DATA.products.forEach(p => {
-    if (p.active === false) return;
+    if (p.active === false || DATA.vendors.find(v => v.id === p.vendorId)?.isActive === false) return;
     const vendor = DATA.vendors.find(v => v.id === p.vendorId);
     const leadDays = vendor?.leadTimeDays || 7;
     const minStock = p.minStock || 0;
@@ -2075,6 +2092,19 @@ async function importProductCsv(event) {
 
 // 商品編集
 let _editActualMonthly = null;
+let _editVendorReferenceMonthly = null;
+
+function getOldVendorReference() {
+  const sourceVendor = DATA.vendors.find(v => v.name === '東京理美容商会');
+  if (!sourceVendor) return null;
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 6);
+  const rows = DATA.orderHistory.filter(h => h.vendorId === sourceVendor.id && new Date(h.date) >= cutoff);
+  const productIds = new Set(rows.map(h => h.productId));
+  const quantity = rows.reduce((sum, h) => sum + (Number(h.quantity) || 0), 0);
+  if (!productIds.size || quantity <= 0) return null;
+  return { quantity, productCount: productIds.size, monthlyPerProduct: quantity / 6 / productIds.size };
+}
 
 function openProductEdit(id) {
   const p = DATA.products.find(x => x.id === id);
@@ -2085,6 +2115,18 @@ function openProductEdit(id) {
   document.getElementById('editPrice').value = p.price || 0;
   document.getElementById('editMonthly').value = p.monthlyConsumption || 0;
   document.getElementById('editSeasonal').value = p.seasonalFactor || 1;
+
+  const refStat = document.getElementById('editVendorReferenceStat');
+  const refBtn = document.getElementById('useVendorReferenceBtn');
+  const reference = DATA.vendors.find(v => v.id === p.vendorId)?.name === 'ミツイ' ? getOldVendorReference() : null;
+  _editVendorReferenceMonthly = reference?.monthlyPerProduct ?? null;
+  if (reference) {
+    refStat.textContent = `東京理美容商会・直近6か月: 計${reference.quantity}個 / ${reference.productCount}商品。1商品あたり月平均${reference.monthlyPerProduct.toFixed(1)}個（参考値）`;
+    refBtn.style.display = '';
+  } else {
+    refStat.textContent = '';
+    refBtn.style.display = 'none';
+  }
 
   // P4: 直近6ヶ月の消費量実績を計算
   const sixMonthsAgo = new Date();
@@ -2112,6 +2154,13 @@ function openProductEdit(id) {
 function useActualConsumption() {
   if (_editActualMonthly !== null) {
     document.getElementById('editMonthly').value = _editActualMonthly.toFixed(1);
+  }
+}
+
+function useVendorReferenceConsumption() {
+  if (_editVendorReferenceMonthly !== null) {
+    document.getElementById('editMonthly').value = _editVendorReferenceMonthly.toFixed(1);
+    showToast('旧仕入先の参考値を入力しました');
   }
 }
 
@@ -2192,7 +2241,7 @@ function initHistoryModal() {
   // 今日の日付をデフォルトに
   document.getElementById('histDate').value = new Date().toISOString().slice(0, 10);
   const sel = document.getElementById('histVendor');
-  sel.innerHTML = DATA.vendors.map(v =>
+  sel.innerHTML = DATA.vendors.filter(v => v.isActive !== false).map(v =>
     `<option value="${v.id}"${v.id === currentVendorId ? ' selected' : ''}>${esc(v.name)}</option>`
   ).join('');
   manualHistoryItems = {};
@@ -2531,6 +2580,74 @@ function copyOrderText() {
 // Product Management
 // ============================
 
+const TOEL_FASHION_TONES = [
+  ['14', ['A', 'N']],
+  ['12', ['A', 'Mt', 'M', 'Be', 'N', 'P', 'V', 'FBe', 'BBe', 'PBe', 'CiL', 'Te']],
+  ['10', ['A', 'Mt', 'M', 'Be', 'N', 'P', 'V', 'FBe', 'BBe', 'PBe', 'CiL', 'Te']],
+  ['9', ['A', 'Mt', 'M', 'Be', 'N', 'R', 'P', 'V']],
+  ['8', ['A', 'Mt', 'M', 'Be', 'N', 'R', 'P', 'V', 'FBe', 'BBe', 'PBe', 'CiL', 'Te']],
+  ['7', ['A', 'Mt', 'M', 'Be', 'N', 'R', 'P', 'V']],
+  ['6', ['A', 'Mt', 'M', 'Be', 'N', 'R', 'P', 'V', 'FBe', 'BBe', 'PBe', 'CiL', 'Te']],
+  ['3', ['CiL']],
+];
+const TOEL_SPECIAL_TONES = ['Blue', 'Green', 'Yellow', 'Fog', 'CL', 'AC', 'Ow', 'Si'];
+const TOEL_PRODUCT_CATALOG = [
+  ...['NB/7', 'NB/5', 'NB/3', 'brN/11', 'LT'].map(tone => `トエル 白髪染め ${tone}`),
+  ...TOEL_FASHION_TONES.flatMap(([level, tones]) => tones.map(tone => `トエル ファッション ${tone}/${level}`)),
+  ...TOEL_SPECIAL_TONES.map(tone => `トエル ファッション ${tone}`),
+];
+
+async function addToelProductsToMitsui() {
+  const vendor = DATA.vendors.find(v => v.name === 'ミツイ' && v.isActive !== false);
+  if (!vendor) { showToast('有効な仕入先「ミツイ」が見つかりません'); return; }
+  const existing = new Set(DATA.products.filter(p => p.vendorId === vendor.id).map(p => p.name));
+  const names = TOEL_PRODUCT_CATALOG.filter(name => !existing.has(name));
+  if (!names.length) { showToast('トエルカラーはすべて登録済みです'); return; }
+  const fashionCount = names.filter(name => name.includes('ファッション')).length;
+  const whiteCount = names.length - fashionCount;
+  if (!confirm(`ミツイにトエルカラーを追加します。\n白髪染め ${whiteCount}色・ファッションカラー ${fashionCount}色\n単価はすべて300円、初期在庫・最低在庫は0です。\n続けますか？`)) return;
+
+  const maxSort = Math.max(0, ...DATA.products.filter(p => p.vendorId === vendor.id).map(p => p.sortOrder || 0));
+  const products = names.map((name, index) => ({
+    id: uid(), vendorId: vendor.id, name, stock: 0, minStock: 0,
+    sortOrder: maxSort + (index + 1) * 10, active: true, price: 300,
+    monthlyConsumption: 0, seasonalFactor: 1,
+  }));
+
+  if (!sbClient || !isOnline) {
+    DATA.products.push(...products);
+    products.forEach(p => enqueueSync({ type: 'add_product', vendorId: p.vendorId, name: p.name, stock: 0, minStock: 0, sortOrder: p.sortOrder, price: 300, monthlyConsumption: 0, seasonalFactor: 1, tempId: p.id }));
+    saveData(DATA); render();
+    showToast(`${products.length}色を端末に登録。オンライン復帰時に同期します`);
+    return;
+  }
+
+  try {
+    const { data: inserted, error } = await sbClient.from('products').insert(products.map(p => ({
+      tenant_id: TENANT_ID, vendor_id: vendor.id, name: p.name, price: 300,
+      sort_order: p.sortOrder, is_active: true,
+    }))).select('id,name');
+    if (error) throw error;
+    const idByName = new Map((inserted || []).map(row => [row.name, row.id]));
+    products.forEach(p => { if (idByName.has(p.name)) p.id = idByName.get(p.name); });
+    const inventoryRows = products.filter(p => idByName.has(p.name)).map(p => ({
+      tenant_id: TENANT_ID, product_id: p.id, current_stock: 0, ideal_stock: 0,
+      monthly_consumption: 0, seasonal_factor: 1,
+    }));
+    const { error: inventoryError } = await sbClient.from('inventory').insert(inventoryRows);
+    if (inventoryError) throw inventoryError;
+    DATA.products.push(...products);
+    saveData(DATA); render(); renderSettingsVendors();
+    lastSyncTime = new Date(); updateSyncDisplay();
+    showToast(`${products.length}色をミツイに登録しました（単価300円）`);
+  } catch(e) {
+    console.error('トエルカラー一括登録失敗:', e);
+    await loadDataFromSupabase();
+    render(); renderSettingsVendors();
+    showToast('登録の一部でエラーが発生しました。商品一覧を確認してください');
+  }
+}
+
 async function addProduct(andNext = false) {
   const vendorId = document.getElementById('addVendor').value;
   const name = document.getElementById('addName').value.trim();
@@ -2621,7 +2738,7 @@ function openEditVendor(id) {
   document.getElementById('vendorLeadTime').value = v.leadTimeDays || 7;
   document.getElementById('editVendorId').value = id;
   document.getElementById('vendorSaveBtn').textContent = '保存する';
-  document.getElementById('vendorDeleteBtn').style.display = 'block';
+  document.getElementById('vendorDeleteBtn').style.display = v.isActive === false ? 'none' : 'block';
   openModal('editVendor');
 }
 
@@ -2698,36 +2815,37 @@ async function saveVendorEdit() {
 async function deleteVendorFromModal() {
   const id = document.getElementById('editVendorId').value;
   closeModal('editVendor');
-  await deleteVendor(id);
+  await toggleVendorActive(id, false);
 }
 
-async function deleteVendor(id) {
+async function toggleVendorActive(id, nextActive) {
   const v = DATA.vendors.find(x => x.id === id);
   if (!v) return;
-  const productCount = DATA.products.filter(p => p.vendorId === id && p.active !== false).length;
-  const msg = productCount > 0
-    ? `「${v.name}」を削除すると、${productCount}件の商品も削除されます。よろしいですか？`
-    : `「${v.name}」を削除しますか？`;
-  if (!confirm(msg)) return;
-
-  if (sbClient && isOnline) {
-    try {
-      await sbClient.from('vendors').update({ is_active: false }).eq('id', id).eq('tenant_id', TENANT_ID);
-      if (productCount > 0) {
-        await sbClient.from('products').update({ is_active: false }).eq('vendor_id', id).eq('tenant_id', TENANT_ID);
-      }
-    } catch(e) {
-      console.error('deleteVendor失敗:', e);
-    }
-  }
-
-  DATA.vendors = DATA.vendors.filter(x => x.id !== id);
-  DATA.products.forEach(p => { if (p.vendorId === id) p.active = false; });
-  if (currentVendorId === id) {
-    currentVendorId = DATA.vendors[0]?.id || '';
+  const action = nextActive ? '再表示' : '非表示';
+  if (!confirm(`「${v.name}」を${action}にしますか？\n登録商品と発注履歴は保持されます。`)) return;
+  v.isActive = nextActive;
+  if (!nextActive && currentVendorId === id) {
+    currentVendorId = DATA.vendors.find(x => x.isActive !== false)?.id || '';
+  } else if (nextActive && !currentVendorId) {
+    currentVendorId = id;
   }
   saveData(DATA);
-  showToast('削除しました');
+  if (!sbClient || !isOnline) {
+    enqueueSync({ type: 'set_vendor_active', id, isActive: nextActive });
+    showToast(`仕入先を${action}にしました`);
+    renderSettingsVendors(); render();
+    return;
+  }
+  try {
+    const { error } = await sbClient.from('vendors').update({ is_active: nextActive }).eq('id', id).eq('tenant_id', TENANT_ID);
+    if (error) throw error;
+    showToast(`仕入先を${action}にしました`);
+    lastSyncTime = new Date(); updateSyncDisplay();
+  } catch(e) {
+    console.error('仕入先表示状態の更新失敗:', e);
+    enqueueSync({ type: 'set_vendor_active', id, isActive: nextActive });
+    showToast('⚠ 端末には保存済み。オンライン復帰時に同期します');
+  }
   renderSettingsVendors();
   render();
 }
@@ -2737,14 +2855,19 @@ function renderSettingsVendors() {
   el.innerHTML = DATA.vendors
     .sort((a,b) => a.sortOrder - b.sortOrder)
     .map(v => `
-      <div class="settings-item" onclick="openEditVendor('${v.id}')">
+      <div class="settings-item" style="gap:8px;">
         <div>
-          <span class="settings-item-label">${esc(v.name)}</span>
+          <span class="settings-item-label" style="${v.isActive === false ? 'opacity:.55;text-decoration:line-through;' : ''}">${esc(v.name)}</span>
           <span style="font-size:11px;color:var(--text-sub);margin-left:8px;">リード${v.leadTimeDays || 7}日</span>
         </div>
-        <span class="settings-item-value">&gt;</span>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <button onclick="openEditVendor('${v.id}')" style="background:var(--surface2);border:0;border-radius:7px;color:var(--text);font-size:12px;padding:7px 9px;">編集</button>
+          <button onclick="toggleVendorActive('${v.id}',${v.isActive === false})" style="background:${v.isActive === false ? 'rgba(81,207,102,.15)' : 'rgba(255,107,107,.13)'};border:0;border-radius:7px;color:${v.isActive === false ? 'var(--success)' : 'var(--danger)'};font-size:12px;font-weight:600;padding:7px 9px;">${v.isActive === false ? '再表示' : '非表示'}</button>
+        </div>
       </div>
     `).join('');
+  const toelAction = document.getElementById('toelCatalogAction');
+  if (toelAction) toelAction.style.display = DATA.vendors.some(v => v.name === 'ミツイ' && v.isActive !== false) ? 'flex' : 'none';
 }
 
 // ============================
@@ -2821,7 +2944,7 @@ function handleImport(e) {
       if (!confirm('現在のデータを上書きしますか？')) return;
       DATA = imported;
       saveData(DATA);
-      currentVendorId = DATA.vendors[0]?.id || '';
+      currentVendorId = DATA.vendors.find(v => v.isActive !== false)?.id || '';
       showToast('インポートしました');
       render();
       closeModal('settings');
@@ -2854,7 +2977,7 @@ function openModal(name) {
   document.getElementById('modal-' + name).classList.add('show');
   if (name === 'addProduct') {
     const sel = document.getElementById('addVendor');
-    sel.innerHTML = DATA.vendors.map(v =>
+    sel.innerHTML = DATA.vendors.filter(v => v.isActive !== false).map(v =>
       `<option value="${v.id}"${v.id === currentVendorId ? ' selected' : ''}>${esc(v.name)}</option>`
     ).join('');
   }
