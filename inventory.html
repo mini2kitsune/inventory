@@ -2225,7 +2225,7 @@ function getToelReferenceFamily(product) {
   if (vendor?.name !== 'ミツイ') return null;
 
   const name = normalizeReferenceName(product.name);
-  const canonicalName = name.match(/^(.+?)（トエル (?:ファッション|白髪染め)）$/)
+  const canonicalName = name.match(/^(.+?)\(トエル (?:ファッション|白髪染め)\)$/)
     || name.match(/^トエル (?:ファッション|白髪染め) (.+)$/);
   if (!canonicalName) return null;
   const code = canonicalName[1].replace(/[／]/g, '/');
@@ -2239,7 +2239,7 @@ function getOldVendorReference(targetProduct) {
   if (!sourceVendor) return { status: 'vendor-missing' };
 
   const targetCode = normalizeReferenceName(targetProduct?.name)
-    .replace(/（トエル (?:ファッション|白髪染め)）$/, '')
+    .replace(/\(トエル (?:ファッション|白髪染め)\)$/, '')
     .trim();
   const exactMapping = toelReferenceSourceToTarget[targetCode];
   const targetFamily = getToelReferenceFamily(targetProduct);
@@ -2264,7 +2264,8 @@ function getOldVendorReference(targetProduct) {
 
   const cutoff = new Date();
   cutoff.setMonth(cutoff.getMonth() - 6);
-  const rows = DATA.orderHistory.filter(h => h.vendorId === sourceVendor.id && sourceProductIds.has(h.productId) && new Date(h.date) >= cutoff);
+  // 商品IDから仕入先を特定しているため、履歴側のvendorIdが旧IDでも対応履歴を取りこぼさない。
+  const rows = DATA.orderHistory.filter(h => sourceProductIds.has(h.productId) && new Date(h.date) >= cutoff);
   const productIds = new Set(rows.map(h => h.productId));
   const quantity = rows.reduce((sum, h) => sum + (Number(h.quantity) || 0), 0);
   if (!productIds.size || quantity <= 0) return { status: 'history-missing', mappingLabel, productCount: sourceProducts.length };
