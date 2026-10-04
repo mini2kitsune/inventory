@@ -1276,7 +1276,6 @@ async function loadDataFromSupabase() {
     }));
 
     await seedBlankToelReferenceValues();
-    await seedBlankToelMinimumStocks();
 
     const activeVendors = DATA.vendors.filter(v => v.isActive !== false);
     if (activeVendors.length > 0 && !activeVendors.find(v => v.id === currentVendorId)) {
@@ -2235,6 +2234,33 @@ function getToelReferenceFamily(product) {
   return isWhiteHairColor && family !== 'LT' ? null : family;
 }
 
+function getToelReferenceIdentity(product) {
+  const family = getToelReferenceFamily(product);
+  if (!family) return null;
+  const name = normalizeReferenceName(product.name)
+    .replace(/\(トエル (?:ファッション|白髪染め)\)$/, '')
+    .trim();
+  const code = name.replace(/[／]/g, '/');
+  const match = code.match(new RegExp(`^${family}(?:\\s*/\\s*|\\s*)(\\d+)$`));
+  if (family === 'LT' && !match) return { family, level: null };
+  return match ? { family, level: Number(match[1]) } : null;
+}
+
+function getSourceColorIdentity(name, family) {
+  const normalized = normalizeReferenceName(name);
+  const aliases = toelReferenceColorFamilies[family] || [];
+  for (const alias of aliases) {
+    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = normalized.match(new RegExp(`${escaped}\\s*[/・.\\-]?\\s*(\\d+)?`, 'i'));
+    if (match && (match[1] || family === 'LT')) {
+      return { family, level: match[1] ? Number(match[1]) : null };
+    }
+  }
+  const codeMatch = normalized.match(new RegExp(`(?:^|[^A-Z0-9])${family}\\s*/?\\s*(\\d+)(?:$|[^0-9])`));
+  if (codeMatch) return { family, level: Number(codeMatch[1]) };
+  return null;
+}
+
 function getOldVendorReference(targetProduct) {
   const sourceVendor = DATA.vendors.find(v => v.name === '東京理美容商会' || v.name === '東京理美容' || v.name.includes('東京理美容'));
   if (!sourceVendor) return { status: 'vendor-missing' };
@@ -2243,22 +2269,19 @@ function getOldVendorReference(targetProduct) {
     .replace(/\(トエル (?:ファッション|白髪染め)\)$/, '')
     .trim();
   const exactMapping = toelReferenceSourceToTarget[targetCode];
-  const targetFamily = getToelReferenceFamily(targetProduct);
-  if (!exactMapping && (!targetFamily || !(targetFamily in toelReferenceColorFamilies))) {
+  const targetIdentity = getToelReferenceIdentity(targetProduct);
+  const targetFamily = targetIdentity?.family;
+  if (!exactMapping && (!targetIdentity || !(targetFamily in toelReferenceColorFamilies))) {
     return { status: 'mapping-missing' };
   }
   const mappingLabel = exactMapping
     ? `フジシン ${exactMapping.cc}cc → ${targetCode}`
-    : `${Object.entries(toelReferenceColorFamilies).find(([family]) => family === targetFamily)?.[1][0] || targetFamily}系 → ${targetFamily}系`;
+    : `${targetFamily}${targetIdentity.level ?? ''} → ${targetCode}`;
   const sourceProducts = DATA.products.filter(p => {
     if (p.vendorId !== sourceVendor.id) return false;
     if (exactMapping) return getFujishinCc(p.name) === exactMapping.cc;
-
-    const sourceName = normalizeReferenceName(p.name);
-    const familyWords = toelReferenceColorFamilies[targetFamily];
-    const hasWord = familyWords.some(word => sourceName.includes(word));
-    const hasCode = new RegExp(`(?:^|[^A-Z0-9])${targetFamily}(?:$|[^A-Z0-9])`).test(sourceName);
-    return hasWord || hasCode;
+    const sourceIdentity = getSourceColorIdentity(p.name, targetFamily);
+    return sourceIdentity?.level === targetIdentity.level;
   });
   const sourceProductIds = new Set(sourceProducts.map(p => p.id));
   if (!sourceProductIds.size) return { status: 'products-missing', mappingLabel };
@@ -2276,7 +2299,7 @@ function getOldVendorReference(targetProduct) {
     status: 'ok',
     quantity,
     productCount: productIds.size,
-    monthlyPerProduct: quantity / 6 / productIds.size,
+    monthlyPerProduct: quantity / 6,
     mappingLabel,
     sourceNames,
   };
@@ -2286,22 +2309,24 @@ async function seedBlankToelReferenceValues() {
   if (!sbClient) return 0;
   const pending = [];
   DATA.products.forEach(product => {
-    if (Number(product.monthlyConsumption) > 0) return;
     if (DATA.vendors.find(v => v.id === product.vendorId)?.name !== 'ミツイ' || !isToelProduct(product)) return;
     const reference = getOldVendorReference(product);
-    if (!reference || !Number.isFinite(reference.monthlyPerProduct) || reference.monthlyPerProduct <= 0) return;
-    const monthly = Number(reference.monthlyPerProduct.toFixed(1));
-    if (monthly <= 0) return;
+    if (reference?.status === 'mapping-missing' || reference?.status === 'vendor-missing') return;
+    const monthly = reference?.status === 'ok' && Number.isFinite(reference.monthlyPerProduct)
+      ? Number(reference.monthlyPerProduct.toFixed(1)) : 0;
+    const minStock = monthly > 0 ? Math.max(1, Math.ceil(monthly / 2)) : 0;
+    if (Number(product.monthlyConsumption) === monthly && Number(product.minStock) === minStock) return;
     product.monthlyConsumption = monthly;
-    pending.push({ product, monthly });
+    product.minStock = minStock;
+    pending.push({ product, monthly, minStock });
   });
   if (pending.length === 0) return 0;
 
   let applied = 0;
-  for (const { product, monthly } of pending) {
+  for (const { product, monthly, minStock } of pending) {
     try {
       const { data, error } = await sbClient.from('inventory')
-        .update({ monthly_consumption: monthly })
+        .update({ monthly_consumption: monthly, ideal_stock: minStock })
         .eq('product_id', product.id)
         .eq('tenant_id', TENANT_ID)
         .select('product_id')
@@ -2310,49 +2335,11 @@ async function seedBlankToelReferenceValues() {
       if (!data) throw new Error('在庫レコードが見つかりません');
       applied++;
     } catch (e) {
-      product.monthlyConsumption = 0;
       console.error('トエル参考値の自動反映失敗:', product.id, e);
     }
   }
   saveData(DATA);
-  if (applied > 0) showToast(`東京理美容商会の対応参考値を${applied}商品に反映しました`);
-  return applied;
-}
-
-async function seedBlankToelMinimumStocks() {
-  if (!sbClient) return 0;
-  const pending = [];
-  DATA.products.forEach(product => {
-    if (Number(product.minStock) > 0) return;
-    if (DATA.vendors.find(v => v.id === product.vendorId)?.name !== 'ミツイ' || !isToelProduct(product)) return;
-    const monthlyConsumption = Number(product.monthlyConsumption) || 0;
-    if (monthlyConsumption <= 0) return;
-    // 月2回発注を目安に、最低在庫は平均月間消費量の半月分（最低1個）を予備として置く。
-    const minStock = Math.max(1, Math.ceil(monthlyConsumption / 2));
-    product.minStock = minStock;
-    pending.push({ product, minStock });
-  });
-  if (pending.length === 0) return 0;
-
-  let applied = 0;
-  for (const { product, minStock } of pending) {
-    try {
-      const { data, error } = await sbClient.from('inventory')
-        .update({ ideal_stock: minStock })
-        .eq('product_id', product.id)
-        .eq('tenant_id', TENANT_ID)
-        .select('product_id')
-        .maybeSingle();
-      if (error) throw error;
-      if (!data) throw new Error('在庫レコードが見つかりません');
-      applied++;
-    } catch (e) {
-      product.minStock = 0;
-      console.error('トエル最低在庫数の自動設定失敗:', product.id, e);
-    }
-  }
-  saveData(DATA);
-  if (applied > 0) showToast(`月2回発注を目安に最低在庫数を${applied}商品へ設定しました`);
+  if (applied > 0) showToast(`色番別の平均月間消費量と最低在庫数を${applied}商品に反映しました`);
   return applied;
 }
 
