@@ -2113,9 +2113,11 @@ async function importProductCsv(event) {
     const exists = DATA.products.find(p => p.vendorId === vendor.id && p.name === productName && p.active !== false);
     if (exists) {
       if (monthlyStr !== '') {
+        const oldMonthly = Number(exists.monthlyConsumption) || 0;
+        const oldMinStock = Number(exists.minStock) || 0;
         exists.monthlyConsumption = parseFloat(monthlyStr) || 0;
         if (minStockStr !== '') exists.minStock = Math.max(0, parseInt(minStockStr) || 0);
-        updatedProducts.push(exists);
+        updatedProducts.push({ product: exists, oldMonthly, oldMinStock });
       } else {
         errors.push(`行${i+1}: 「${productName}」は既に存在します（スキップ）`);
       }
@@ -2173,7 +2175,8 @@ async function importProductCsv(event) {
         if (local) local.id = realId;
       } catch(e) { console.error('商品CSVインポート失敗:', e); }
     }
-    for (const p of updatedProducts) {
+    let failedUpdates = 0;
+    for (const { product: p, oldMonthly, oldMinStock } of updatedProducts) {
       try {
         const { error } = await sbClient.from('inventory').update({
           monthly_consumption: p.monthlyConsumption,
@@ -2181,9 +2184,18 @@ async function importProductCsv(event) {
         })
           .eq('product_id', p.id).eq('tenant_id', TENANT_ID);
         if (error) throw error;
-      } catch(e) { console.error('月間消費量更新失敗:', e); }
+      } catch(e) {
+        p.monthlyConsumption = oldMonthly;
+        p.minStock = oldMinStock;
+        failedUpdates++;
+        console.error('消費量・最低在庫数更新失敗:', e);
+      }
     }
     saveData(DATA);
+    if (failedUpdates > 0) {
+      render();
+      showToast(`${failedUpdates}商品の更新に失敗しました。画面の値は元に戻しました`);
+    }
   }
 }
 
