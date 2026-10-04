@@ -1276,6 +1276,7 @@ async function loadDataFromSupabase() {
     }));
 
     await seedBlankToelReferenceValues();
+    await copyTokyoRangeToFujishin();
 
     const activeVendors = DATA.vendors.filter(v => v.isActive !== false);
     if (activeVendors.length > 0 && !activeVendors.find(v => v.id === currentVendorId)) {
@@ -2088,6 +2089,144 @@ function downloadProductCsvTemplate() {
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
   a.download = '商品マスタインポート用.csv'; a.click();
+}
+
+async function copyTokyoRangeToFujishin() {
+  if (!sbClient) return;
+  const tokyo = DATA.vendors.find(v => v.name === '東京理美容商会' || v.name === '東京理美容' || v.name.includes('東京理美容'));
+  const fujishin = DATA.vendors.find(v => v.name === 'フジシン' || v.name.includes('フジシン'));
+  if (!tokyo || !fujishin) {
+    showToast('東京理美容商会またはフジシンの仕入先が見つかりません');
+    return;
+  }
+  const tokyoProducts = DATA.products.filter(p => p.vendorId === tokyo.id).sort((a, b) => a.sortOrder - b.sortOrder);
+  const start = tokyoProducts.findIndex(p => p.name === 'L-B');
+  const end = tokyoProducts.findIndex(p => p.name === 'P-N');
+  if (start < 0 || end < start) {
+    showToast('コピー対象の範囲（L-B〜P-N）を特定できません');
+    return;
+  }
+  const sourceProducts = tokyoProducts.slice(start, end + 1);
+  const sourceIds = new Set(sourceProducts.map(p => p.id));
+  const sourceHistory = DATA.orderHistory.filter(h => sourceIds.has(h.productId));
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 6);
+  const recentByProduct = new Map();
+  sourceHistory.forEach(h => {
+    if (new Date(h.date) < cutoff) return;
+    recentByProduct.set(h.productId, (recentByProduct.get(h.productId) || 0) + (Number(h.quantity) || 0));
+  });
+  let addedProducts = 0;
+  let copiedHistory = 0;
+  try {
+    const nextSort = Math.max(0, ...DATA.products.filter(p => p.vendorId === fujishin.id).map(p => p.sortOrder || 0)) + 10;
+    const targetBySource = new Map();
+    for (let i = 0; i < sourceProducts.length; i++) {
+      const source = sourceProducts[i];
+      let target = DATA.products.find(p => p.vendorId === fujishin.id && p.name === source.name);
+      if (!target) {
+        const { data, error } = await sbClient.from('products').insert({
+          tenant_id: TENANT_ID,
+          vendor_id: fujishin.id,
+          name: source.name,
+          price: 0,
+          sort_order: nextSort + i * 10,
+          is_active: true,
+        }).select('id').single();
+        if (error) throw error;
+        target = {
+          id: data.id, vendorId: fujishin.id, name: source.name,
+          stock: 0, minStock: 0, sortOrder: nextSort + i * 10,
+          active: true, price: 0, monthlyConsumption: 0,
+          seasonalFactor: source.seasonalFactor || 1,
+        };
+        DATA.products.push(target);
+        addedProducts++;
+      } else if (target.active === false) {
+        const { error } = await sbClient.from('products').update({ is_active: true })
+          .eq('id', target.id).eq('tenant_id', TENANT_ID);
+        if (error) throw error;
+        target.active = true;
+      }
+      targetBySource.set(source.id, target);
+    }
+
+    const targetIds = [...targetBySource.values()].map(p => p.id);
+    const { data: inventoryRows, error: inventoryReadError } = await sbClient.from('inventory')
+      .select('product_id').eq('tenant_id', TENANT_ID).in('product_id', targetIds);
+    if (inventoryReadError) throw inventoryReadError;
+    const inventoryIds = new Set((inventoryRows || []).map(row => row.product_id));
+    const missingInventory = [];
+    for (const source of sourceProducts) {
+      const target = targetBySource.get(source.id);
+      if (inventoryIds.has(target.id)) continue;
+      const monthly = Number(((recentByProduct.get(source.id) || 0) / 6).toFixed(1));
+      const minStock = monthly > 0 ? Math.max(1, Math.ceil(monthly / 2)) : 0;
+      missingInventory.push({
+        tenant_id: TENANT_ID, product_id: target.id, current_stock: 0,
+        ideal_stock: minStock, monthly_consumption: monthly,
+        seasonal_factor: source.seasonalFactor || 1,
+      });
+      target.stock = 0;
+      target.minStock = minStock;
+      target.monthlyConsumption = monthly;
+      target.seasonalFactor = source.seasonalFactor || 1;
+    }
+    if (missingInventory.length) {
+      const { error } = await sbClient.from('inventory').insert(missingInventory);
+      if (error) throw error;
+    }
+
+    const { data: existingHistory, error: historyReadError } = await sbClient.from('order_history')
+      .select('product_id, order_date, quantity, stock_at_order')
+      .eq('tenant_id', TENANT_ID).in('product_id', targetIds);
+    if (historyReadError) throw historyReadError;
+    const signature = h => `${h.productId || h.product_id}|${new Date(h.date || h.order_date).getTime()}|${Number(h.quantity) || 0}|${Number(h.stockAtOrder ?? h.stock_at_order) || 0}`;
+    const targetCounts = new Map();
+    (existingHistory || []).forEach(h => targetCounts.set(signature(h), (targetCounts.get(signature(h)) || 0) + 1));
+    const sourceGroups = new Map();
+    sourceHistory.forEach(h => {
+      const target = targetBySource.get(h.productId);
+      const copy = { ...h, productId: target.id, vendorId: fujishin.id };
+      const key = signature(copy);
+      if (!sourceGroups.has(key)) sourceGroups.set(key, []);
+      sourceGroups.get(key).push(copy);
+    });
+    const historyRows = [];
+    for (const [key, copies] of sourceGroups) {
+      const have = targetCounts.get(key) || 0;
+      for (let i = have; i < copies.length; i++) {
+        const h = copies[i];
+        historyRows.push({
+          tenant_id: TENANT_ID,
+          product_id: h.productId,
+          vendor_id: fujishin.id,
+          order_date: h.date,
+          quantity: Number(h.quantity) || 0,
+          stock_at_order: Number(h.stockAtOrder) || 0,
+        });
+      }
+    }
+    for (let i = 0; i < historyRows.length; i += 100) {
+      const { error } = await sbClient.from('order_history').insert(historyRows.slice(i, i + 100));
+      if (error) throw error;
+      copiedHistory += Math.min(100, historyRows.length - i);
+    }
+
+    historyRows.forEach(h => {
+      const target = [...targetBySource.values()].find(p => p.id === h.product_id);
+      DATA.orderHistory.push({
+        id: uid(), productId: h.product_id, vendorId: fujishin.id,
+        productName: target?.name || '', vendorName: fujishin.name,
+        date: h.order_date, quantity: h.quantity,
+        stockAtOrder: h.stock_at_order, price: target?.price || 0,
+      });
+    });
+    if (addedProducts || copiedHistory) showToast(`フジシンへ商品${addedProducts}件・履歴${copiedHistory}件をコピーしました`);
+  } catch (e) {
+    console.error('東京理美容商会からフジシンへのコピー失敗:', e);
+    showToast('商品・履歴コピーが未完了です。通信回復後の再読み込みで続きから反映します');
+  }
 }
 
 // 商品マスタCSVインポート（P6c）
