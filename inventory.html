@@ -2114,6 +2114,7 @@ async function importProductCsv(event) {
     if (exists) {
       if (monthlyStr !== '') {
         exists.monthlyConsumption = parseFloat(monthlyStr) || 0;
+        if (minStockStr !== '') exists.minStock = Math.max(0, parseInt(minStockStr) || 0);
         updatedProducts.push(exists);
       } else {
         errors.push(`行${i+1}: 「${productName}」は既に存在します（スキップ）`);
@@ -2174,8 +2175,12 @@ async function importProductCsv(event) {
     }
     for (const p of updatedProducts) {
       try {
-        await sbClient.from('inventory').update({ monthly_consumption: p.monthlyConsumption })
+        const { error } = await sbClient.from('inventory').update({
+          monthly_consumption: p.monthlyConsumption,
+          ideal_stock: p.minStock,
+        })
           .eq('product_id', p.id).eq('tenant_id', TENANT_ID);
+        if (error) throw error;
       } catch(e) { console.error('月間消費量更新失敗:', e); }
     }
     saveData(DATA);
