@@ -887,6 +887,12 @@ async function processSyncQueue() {
           ok = !error;
           break;
         }
+        case 'rename_product': {
+          const rid = idMap[op.id] || op.id;
+          const { error } = await sbClient.from('products').update({ name: op.name }).eq('id', rid).eq('tenant_id', TENANT_ID);
+          ok = !error;
+          break;
+        }
         case 'delete_product': {
           const rid = idMap[op.id] || op.id;
           const { error } = await sbClient.from('products').update({ is_active: false }).eq('id', rid).eq('tenant_id', TENANT_ID);
@@ -1157,6 +1163,46 @@ async function fetchAllOrderHistory() {
   return { data: all };
 }
 
+function getCanonicalToelName(name) {
+  let match = name.match(/^トエル 白髪染め (.+)$/);
+  if (match) return `白髪染め ${match[1]}（トエル）`;
+  match = name.match(/^トエル ファッション (.+)$/);
+  if (match) return `ファッション ${match[1]}（トエル）`;
+  return name;
+}
+
+async function normalizeToelProductNames() {
+  const vendor = DATA.vendors.find(v => v.name === 'ミツイ');
+  if (!vendor) return;
+  const changes = DATA.products
+    .filter(p => p.vendorId === vendor.id)
+    .map(p => ({ product: p, name: getCanonicalToelName(p.name) }))
+    .filter(change => change.name !== change.product.name);
+  if (!changes.length) return;
+
+  changes.forEach(({ product, name }) => { product.name = name; });
+  const nameById = new Map(changes.map(({ product, name }) => [product.id, name]));
+  DATA.orderHistory.forEach(h => { if (nameById.has(h.productId)) h.productName = nameById.get(h.productId); });
+  saveData(DATA);
+
+  for (let i = 0; i < changes.length; i += 10) {
+    await Promise.all(changes.slice(i, i + 10).map(async ({ product, name }) => {
+      if (!sbClient || !isOnline) {
+        enqueueSync({ type: 'rename_product', id: product.id, name });
+        return;
+      }
+      try {
+        const { error } = await sbClient.from('products').update({ name }).eq('id', product.id).eq('tenant_id', TENANT_ID);
+        if (error) throw error;
+      } catch(e) {
+        console.error('トエル商品名の更新失敗:', product.id, e);
+        enqueueSync({ type: 'rename_product', id: product.id, name });
+      }
+    }));
+  }
+  saveData(DATA);
+}
+
 async function loadDataFromSupabase() {
   if (!sbClient) return;
   try {
@@ -1197,6 +1243,8 @@ async function loadDataFromSupabase() {
         seasonalFactor: parseFloat(inv.seasonal_factor || 1),
       };
     });
+
+    await normalizeToelProductNames();
 
     // Build lookup maps after products are loaded
     const productMap = {};
@@ -1279,6 +1327,7 @@ async function init() {
     const cached = loadDataFromCache();
     if (cached && cached.products && cached.products.length > 0) {
       DATA = cached;
+      await normalizeToelProductNames();
       currentVendorId = DATA.vendors.find(v => v.isActive !== false)?.id || '';
       render();
     }
@@ -2592,9 +2641,9 @@ const TOEL_FASHION_TONES = [
 ];
 const TOEL_SPECIAL_TONES = ['Blue', 'Green', 'Yellow', 'Fog', 'CL', 'AC', 'Ow', 'Si'];
 const TOEL_PRODUCT_CATALOG = [
-  ...['NB/7', 'NB/5', 'NB/3', 'brN/11', 'LT'].map(tone => `トエル 白髪染め ${tone}`),
-  ...TOEL_FASHION_TONES.flatMap(([level, tones]) => tones.map(tone => `トエル ファッション ${tone}/${level}`)),
-  ...TOEL_SPECIAL_TONES.map(tone => `トエル ファッション ${tone}`),
+  ...['NB/7', 'NB/5', 'NB/3', 'brN/11', 'LT'].map(tone => `白髪染め ${tone}（トエル）`),
+  ...TOEL_FASHION_TONES.flatMap(([level, tones]) => tones.map(tone => `ファッション ${tone}/${level}（トエル）`)),
+  ...TOEL_SPECIAL_TONES.map(tone => `ファッション ${tone}（トエル）`),
 ];
 
 async function addToelProductsToMitsui() {
