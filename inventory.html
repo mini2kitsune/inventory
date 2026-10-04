@@ -2189,7 +2189,17 @@ let _editVendorReferenceMonthly = null;
 function isToelProduct(product) {
   const name = normalizeReferenceName(product?.name);
   return /\s*\(トエル (?:ファッション|白髪染め)\)$/.test(name)
-    || /^トエル (?:ファッション|白髪染め) /.test(name);
+    || /^トエル (?:ファッション|白髪染め)\s+/.test(name);
+}
+
+function getToelProductCode(product) {
+  if (!product) return '';
+  let code = normalizeReferenceName(product.name)
+    .replace(/\s*\(トエル (?:ファッション|白髪染め)\)$/, '')
+    .trim();
+  const prefixed = code.match(/^トエル (?:ファッション|白髪染め)\s+(.+)$/);
+  if (prefixed) code = prefixed[1].trim();
+  return code.replace(/[／]/g, '/');
 }
 
 const toelReferenceSourceToTarget = {
@@ -2225,23 +2235,13 @@ function getToelReferenceFamily(product) {
   const vendor = DATA.vendors.find(v => v.id === product.vendorId);
   if (vendor?.name !== 'ミツイ') return null;
 
-  const name = normalizeReferenceName(product.name);
-  const canonicalName = name.match(/^(.+?)\s*\(トエル (?:ファッション|白髪染め)\)$/)
-    || name.match(/^トエル (?:ファッション|白髪染め) (.+)$/);
-  if (!canonicalName) return null;
-  const code = canonicalName[1].replace(/[／]/g, '/');
-  const family = code.match(/^([A-Z]+)/)?.[1] || null;
-  const isWhiteHairColor = name.includes('トエル 白髪染め');
-  return isWhiteHairColor && family !== 'LT' ? null : family;
+  return getToelProductCode(product).match(/^([A-Z]+)/)?.[1] || null;
 }
 
 function getToelReferenceIdentity(product) {
   const family = getToelReferenceFamily(product);
   if (!family) return null;
-  const name = normalizeReferenceName(product.name)
-    .replace(/\s*\(トエル (?:ファッション|白髪染め)\)$/, '')
-    .trim();
-  const code = name.replace(/[／]/g, '/');
+  const code = getToelProductCode(product);
   const match = code.match(new RegExp(`^${family}(?:\\s*/\\s*|\\s*)(\\d+)$`));
   if (family === 'LT' && !match) return { family, level: null };
   return match ? { family, level: Number(match[1]) } : null;
@@ -2266,9 +2266,7 @@ function getOldVendorReference(targetProduct) {
   const sourceVendor = DATA.vendors.find(v => v.name === '東京理美容商会' || v.name === '東京理美容' || v.name.includes('東京理美容'));
   if (!sourceVendor) return { status: 'vendor-missing' };
 
-  const targetCode = normalizeReferenceName(targetProduct?.name)
-    .replace(/\s*\(トエル (?:ファッション|白髪染め)\)$/, '')
-    .trim();
+  const targetCode = getToelProductCode(targetProduct);
   const exactMapping = toelReferenceSourceToTarget[targetCode];
   const targetIdentity = getToelReferenceIdentity(targetProduct);
   const targetFamily = targetIdentity?.family;
@@ -2317,14 +2315,17 @@ async function seedBlankToelReferenceValues() {
       ? Number(reference.monthlyPerProduct.toFixed(1)) : 0;
     const minStock = monthly > 0 ? Math.max(1, Math.ceil(monthly / 2)) : 0;
     if (Number(product.monthlyConsumption) === monthly && Number(product.minStock) === minStock) return;
+    const oldMonthly = Number(product.monthlyConsumption) || 0;
+    const oldMinStock = Number(product.minStock) || 0;
     product.monthlyConsumption = monthly;
     product.minStock = minStock;
-    pending.push({ product, monthly, minStock });
+    pending.push({ product, monthly, minStock, oldMonthly, oldMinStock });
   });
   if (pending.length === 0) return 0;
 
   let applied = 0;
-  for (const { product, monthly, minStock } of pending) {
+  let failures = 0;
+  for (const { product, monthly, minStock, oldMonthly, oldMinStock } of pending) {
     try {
       const { data, error } = await sbClient.from('inventory')
         .update({ monthly_consumption: monthly, ideal_stock: minStock })
@@ -2336,11 +2337,15 @@ async function seedBlankToelReferenceValues() {
       if (!data) throw new Error('在庫レコードが見つかりません');
       applied++;
     } catch (e) {
+      product.monthlyConsumption = oldMonthly;
+      product.minStock = oldMinStock;
+      failures++;
       console.error('トエル参考値の自動反映失敗:', product.id, e);
     }
   }
   saveData(DATA);
   if (applied > 0) showToast(`色番別の平均月間消費量と最低在庫数を${applied}商品に反映しました`);
+  else if (failures > 0) showToast(`トエル商品の数値更新に${failures}件失敗しました。商品詳細で状態を確認してください`);
   return applied;
 }
 
