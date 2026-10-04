@@ -2242,7 +2242,6 @@ function normalizeReferenceName(name) {
 
 function getFujishinCc(name) {
   const normalized = normalizeReferenceName(name);
-  if (!normalized.includes('フジシン') && !normalized.includes('FUJISHIN')) return null;
   const match = normalized.match(/(?:^|[^0-9])(6|8|10)\s*CC(?:$|[^A-Z])/);
   return match ? Number(match[1]) : null;
 }
@@ -2273,6 +2272,8 @@ function getSourceColorIdentity(name, family) {
     if (match && (match[1] || family === 'LT')) {
       return { family, level: match[1] ? Number(match[1]) : null };
     }
+    const prefixLevel = normalized.match(new RegExp(`(?:^|[^0-9])(\\d+)\\s*[/・.\\-]?\\s*${escaped}(?:$|[^A-Z])`, 'i'));
+    if (prefixLevel) return { family, level: Number(prefixLevel[1]) };
   }
   const codeMatch = normalized.match(new RegExp(`(?:^|[^A-Z0-9])${family}\\s*/?\\s*(\\d+)(?:$|[^0-9])`));
   if (codeMatch) return { family, level: Number(codeMatch[1]) };
@@ -2281,7 +2282,8 @@ function getSourceColorIdentity(name, family) {
 
 function getOldVendorReference(targetProduct) {
   const sourceVendor = DATA.vendors.find(v => v.name === '東京理美容商会' || v.name === '東京理美容' || v.name.includes('東京理美容'));
-  if (!sourceVendor) return { status: 'vendor-missing' };
+  const fujishinVendor = DATA.vendors.find(v => v.name === 'フジシン' || v.name.includes('フジシン'));
+  if (!sourceVendor && !fujishinVendor) return { status: 'vendor-missing' };
 
   const targetCode = getToelProductCode(targetProduct);
   const exactMapping = toelReferenceSourceToTarget[targetCode];
@@ -2294,10 +2296,15 @@ function getOldVendorReference(targetProduct) {
     ? `フジシン ${exactMapping.cc}cc → ${targetCode}`
     : `${targetFamily}${targetIdentity.level ?? ''} → ${targetCode}`;
   const sourceProducts = DATA.products.filter(p => {
-    if (p.vendorId !== sourceVendor.id) return false;
-    if (exactMapping) return getFujishinCc(p.name) === exactMapping.cc;
+    if (exactMapping) {
+      const isReferenceVendor = p.vendorId === sourceVendor?.id || p.vendorId === fujishinVendor?.id;
+      return isReferenceVendor && getFujishinCc(p.name) === exactMapping.cc;
+    }
+    if (!sourceVendor || p.vendorId !== sourceVendor.id) return false;
     const sourceIdentity = getSourceColorIdentity(p.name, targetFamily);
-    return sourceIdentity?.level === targetIdentity.level;
+    return targetFamily === 'LT'
+      ? sourceIdentity?.family === 'LT'
+      : sourceIdentity?.level === targetIdentity.level;
   });
   const sourceProductIds = new Set(sourceProducts.map(p => p.id));
   if (!sourceProductIds.size) return { status: 'products-missing', mappingLabel };
