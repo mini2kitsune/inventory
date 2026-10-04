@@ -3201,15 +3201,24 @@ function dndStart(e, pid) {
   _dndState = { pid, startY: clientY, pointerY: clientY, currentTargetPid: null };
   let autoScrollFrame = null;
 
+  const getAutoScrollBounds = () => {
+    const headerBottom = document.querySelector('.header')?.getBoundingClientRect().bottom || 0;
+    const top = Math.min(window.innerHeight * 0.55, headerBottom + 64);
+    return { top, bottom: window.innerHeight - 72 };
+  };
+
   const autoScroll = () => {
     if (!_dndState) { autoScrollFrame = null; return; }
     const y = _dndState.pointerY;
-    const edge = 84;
-    const distance = y < edge ? edge - y : y > window.innerHeight - edge ? y - (window.innerHeight - edge) : 0;
+    const bounds = getAutoScrollBounds();
+    const direction = y < bounds.top ? -1 : y > bounds.bottom ? 1 : 0;
+    const distance = direction < 0 ? bounds.top - y : direction > 0 ? y - bounds.bottom : 0;
     if (distance > 0) {
       const step = Math.max(3, Math.min(14, Math.ceil(distance / 8)));
-      window.scrollBy(0, y < edge ? -step : step);
-      autoScrollFrame = requestAnimationFrame(autoScroll);
+      const scroller = document.scrollingElement || document.documentElement;
+      const previousScrollTop = scroller.scrollTop;
+      scroller.scrollTop += direction * step;
+      autoScrollFrame = scroller.scrollTop === previousScrollTop ? null : requestAnimationFrame(autoScroll);
     } else {
       autoScrollFrame = null;
     }
@@ -3220,7 +3229,8 @@ function dndStart(e, pid) {
     if (!_dndState) return;
     const y = ev.touches ? ev.touches[0].clientY : ev.clientY;
     _dndState.pointerY = y;
-    if (y < 84 || y > window.innerHeight - 84) {
+    const bounds = getAutoScrollBounds();
+    if (y < bounds.top || y > bounds.bottom) {
       if (autoScrollFrame === null) autoScrollFrame = requestAnimationFrame(autoScroll);
     }
     const all = [...document.querySelectorAll('#content .card[data-pid]')];
