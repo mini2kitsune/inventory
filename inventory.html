@@ -1386,6 +1386,21 @@ async function init() {
 // Render Engine
 // ============================
 
+const toelFashionColorCollator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+
+function isToelFashionProduct(product) {
+  return /（トエル ファッション）$/.test(product?.name || '')
+    || /^トエル ファッション /.test(product?.name || '');
+}
+
+function compareProductDisplayOrder(a, b) {
+  if (isToelFashionProduct(a) && isToelFashionProduct(b)) {
+    // 色番の英字系列（A, B, …, Mt など）を先に、系列内の番号を数値順にする。
+    return toelFashionColorCollator.compare(a.name, b.name);
+  }
+  return (a.sortOrder || 0) - (b.sortOrder || 0);
+}
+
 function render() {
   renderVendorTabs();
   renderContent();
@@ -1417,7 +1432,7 @@ function renderContent() {
 function renderStockView(el) {
   const products = DATA.products
     .filter(p => p.vendorId === currentVendorId && p.active !== false && DATA.vendors.find(v => v.id === p.vendorId)?.isActive !== false)
-    .sort((a,b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+    .sort(compareProductDisplayOrder);
 
   if (products.length === 0) {
     el.innerHTML = `
@@ -1500,6 +1515,9 @@ function renderOrderView(el) {
     const vName = v ? v.name : '不明';
     if (!vendorGroups[vId]) vendorGroups[vId] = { name: vName, items: [] };
     vendorGroups[vId].items.push({ ...item, product: p });
+  });
+  Object.values(vendorGroups).forEach(group => {
+    group.items.sort((a, b) => compareProductDisplayOrder(a.product, b.product));
   });
 
   // Initialize vendor selection (all selected by default)
@@ -1696,7 +1714,7 @@ function renderHistoryView(el) {
       const vItems = vendorGroups[vName].sort((a,b) => {
         const pa = DATA.products.find(p => p.id === a.productId);
         const pb = DATA.products.find(p => p.id === b.productId);
-        const so = (pa?.sortOrder || 0) - (pb?.sortOrder || 0);
+        const so = compareProductDisplayOrder(pa || { name: a.productName }, pb || { name: b.productName });
         if (so !== 0) return so;
         return (a.productName || '').localeCompare(b.productName || '', 'ja');
       });
@@ -2326,7 +2344,7 @@ function updateHistProducts() {
   const products = DATA.products
     .filter(p => p.vendorId === vendorId && p.active !== false)
     .filter(p => !query || p.name.toLowerCase().includes(query))
-    .sort((a,b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+    .sort(compareProductDisplayOrder);
 
   const el = document.getElementById('histProductList');
   el.innerHTML = products.map(p => {
