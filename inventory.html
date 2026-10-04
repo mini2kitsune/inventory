@@ -539,7 +539,7 @@
       </div>
       <div id="editActualStat" style="font-size:12px;color:var(--text-sub);margin-top:4px;min-height:16px;"></div>
       <div id="editVendorReferenceStat" style="font-size:12px;color:var(--text-sub);margin-top:6px;"></div>
-      <button id="useVendorReferenceBtn" onclick="useVendorReferenceConsumption()" style="display:none;margin-top:6px;padding:8px 12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--accent-light);font-size:12px;font-weight:600;cursor:pointer;">旧仕入先の参考値を使う</button>
+      <button id="useVendorReferenceBtn" onclick="useVendorReferenceConsumption()" style="display:none;margin-top:6px;padding:8px 12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--accent-light);font-size:12px;font-weight:600;cursor:pointer;">カラー剤の参考値を使う</button>
     </div>
     <div class="form-group">
       <label class="form-label">季節調整係数（通常は1.0）</label>
@@ -2145,12 +2145,21 @@ async function importProductCsv(event) {
 let _editActualMonthly = null;
 let _editVendorReferenceMonthly = null;
 
+function isToelProduct(product) {
+  return /（トエル (?:ファッション|白髪染め)）$/.test(product?.name || '')
+    || /^トエル (?:ファッション|白髪染め) /.test(product?.name || '');
+}
+
 function getOldVendorReference() {
   const sourceVendor = DATA.vendors.find(v => v.name === '東京理美容商会');
   if (!sourceVendor) return null;
+  const colorProductIds = new Set(DATA.products
+    .filter(p => p.vendorId === sourceVendor.id && /カラー|染|ブリーチ|白髪|グレイ|グレー|マニキュア|color|bleach|gray/i.test(p.name))
+    .map(p => p.id));
+  if (!colorProductIds.size) return null;
   const cutoff = new Date();
   cutoff.setMonth(cutoff.getMonth() - 6);
-  const rows = DATA.orderHistory.filter(h => h.vendorId === sourceVendor.id && new Date(h.date) >= cutoff);
+  const rows = DATA.orderHistory.filter(h => h.vendorId === sourceVendor.id && colorProductIds.has(h.productId) && new Date(h.date) >= cutoff);
   const productIds = new Set(rows.map(h => h.productId));
   const quantity = rows.reduce((sum, h) => sum + (Number(h.quantity) || 0), 0);
   if (!productIds.size || quantity <= 0) return null;
@@ -2169,11 +2178,15 @@ function openProductEdit(id) {
 
   const refStat = document.getElementById('editVendorReferenceStat');
   const refBtn = document.getElementById('useVendorReferenceBtn');
-  const reference = DATA.vendors.find(v => v.id === p.vendorId)?.name === 'ミツイ' ? getOldVendorReference() : null;
+  const isToelAtMitsui = DATA.vendors.find(v => v.id === p.vendorId)?.name === 'ミツイ' && isToelProduct(p);
+  const reference = isToelAtMitsui ? getOldVendorReference() : null;
   _editVendorReferenceMonthly = reference?.monthlyPerProduct ?? null;
-  if (reference) {
-    refStat.textContent = `東京理美容商会・直近6か月: 計${reference.quantity}個 / ${reference.productCount}商品。1商品あたり月平均${reference.monthlyPerProduct.toFixed(1)}個（参考値）`;
+  if (isToelAtMitsui && reference) {
+    refStat.textContent = `東京理美容商会のカラー剤関連商品・直近6か月: 計${reference.quantity}個 / ${reference.productCount}商品。1商品あたり月平均${reference.monthlyPerProduct.toFixed(1)}個（参考値）`;
     refBtn.style.display = '';
+  } else if (isToelAtMitsui) {
+    refStat.textContent = '東京理美容商会にカラー剤関連の発注履歴が見つかりません';
+    refBtn.style.display = 'none';
   } else {
     refStat.textContent = '';
     refBtn.style.display = 'none';
