@@ -1823,7 +1823,7 @@ function renderHistoryView(el) {
       const rawEntryCount = vItems.reduce((sum, item) => sum + item.historyIds.length, 0);
       html += `<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--accent-light);font-weight:700;margin:10px 0 4px;padding:4px 8px;background:rgba(108,99,255,0.1);border-radius:6px;">
         <span>${esc(vName)}</span>
-        <button onclick="openHistoryDateEditor('${dateKey}','${vendorId}',${rawEntryCount})" style="padding:4px 7px;border:0;border-radius:6px;background:transparent;color:var(--text-sub);font-size:11px;font-weight:600;cursor:pointer;">日付修正</button>
+        <button onclick="openHistoryDateEditor('${dateKey}','${vendorId}',${rawEntryCount})" style="padding:5px 9px;border:1px solid rgba(108,99,255,0.35);border-radius:7px;background:var(--surface);color:var(--accent-light);font-size:12px;font-weight:700;white-space:nowrap;cursor:pointer;">日付修正</button>
       </div>`;
       vItems.forEach(item => {
         const subtotal = item.totalAmount;
