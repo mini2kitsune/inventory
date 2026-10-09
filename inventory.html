@@ -1645,6 +1645,30 @@ function selectAllOrderVendors() {
 
 let historyMonth = null; // null = current month
 
+function aggregateHistoryEntries(entries) {
+  const grouped = new Map();
+  entries.forEach(h => {
+    const key = `${h.vendorId}|${h.productId}|${toJSTDateKey(new Date(h.date))}`;
+    let group = grouped.get(key);
+    if (!group) {
+      group = { ...h, quantity: 0, totalAmount: 0, historyIds: [], latestDate: h.date };
+      grouped.set(key, group);
+    }
+    const quantity = Number(h.quantity) || 0;
+    group.quantity += quantity;
+    group.totalAmount += (Number(h.price) || 0) * quantity;
+    group.historyIds.push(h.id);
+    if (new Date(h.date) > new Date(group.latestDate)) {
+      group.latestDate = h.date;
+      group.stockAtOrder = h.stockAtOrder;
+    }
+  });
+  return [...grouped.values()].map(group => ({
+    ...group,
+    price: group.quantity ? group.totalAmount / group.quantity : 0,
+  }));
+}
+
 function renderHistoryView(el) {
   if (DATA.orderHistory.length === 0) {
     el.innerHTML = `
@@ -1688,17 +1712,18 @@ function renderHistoryView(el) {
     });
 
   // Summary
-  const totalItems = history.reduce((s, h) => s + (h.quantity || 1), 0);
-  const monthTotal = history.reduce((s, h) => s + (h.price || 0) * (h.quantity || 1), 0);
+  const monthlyGroups = aggregateHistoryEntries(history);
+  const totalItems = monthlyGroups.reduce((s, h) => s + h.quantity, 0);
+  const monthTotal = monthlyGroups.reduce((s, h) => s + h.totalAmount, 0);
   html += `<div style="background:var(--surface);border-radius:var(--radius);padding:12px 16px;margin-bottom:12px;display:flex;justify-content:space-around;text-align:center;">
-    <div><div style="font-size:24px;font-weight:700;color:var(--accent-light);">${history.length}</div><div style="font-size:11px;color:var(--text-sub);">件</div></div>
+    <div><div style="font-size:24px;font-weight:700;color:var(--accent-light);">${monthlyGroups.length}</div><div style="font-size:11px;color:var(--text-sub);">件</div></div>
     <div><div style="font-size:24px;font-weight:700;color:var(--accent-light);">${totalItems}</div><div style="font-size:11px;color:var(--text-sub);">個</div></div>
     <div><div style="font-size:24px;font-weight:700;color:var(--warning);">¥${monthTotal.toLocaleString()}</div><div style="font-size:11px;color:var(--text-sub);">合計</div></div>
   </div>`;
 
   // Group by date (YYYY-MM-DD JST key; display uses toLocaleDateString)
   const groups = {};
-  history.forEach(h => {
+  monthlyGroups.forEach(h => {
     const dateKey = toJSTDateKey(new Date(h.date));
     if (!groups[dateKey]) groups[dateKey] = [];
     const p = DATA.products.find(x => x.id === h.productId);
@@ -1714,7 +1739,7 @@ function renderHistoryView(el) {
     let dateTotal = 0;
     items.forEach(item => {
       const vName = item.vendorName || '不明';
-      const sub = (item.price || 0) * (item.quantity || 1);
+      const sub = item.totalAmount;
       vendorTotals[vName] = (vendorTotals[vName] || 0) + sub;
       dateTotal += sub;
     });
@@ -1756,7 +1781,7 @@ function renderHistoryView(el) {
       });
       html += `<div style="font-size:12px;color:var(--accent-light);font-weight:700;margin:10px 0 4px;padding:4px 8px;background:rgba(108,99,255,0.1);border-radius:6px;">${esc(vName)}</div>`;
       vItems.forEach(item => {
-        const subtotal = (item.price || 0) * (item.quantity || 1);
+        const subtotal = item.totalAmount;
         html += `
           <div class="card" style="position:relative;">
             <div class="card-left">
@@ -1769,7 +1794,7 @@ function renderHistoryView(el) {
             <div style="display:flex;align-items:center;gap:10px;">
               <div style="font-size:20px;font-weight:700;color:var(--accent-light);">×${item.quantity}</div>
               ${subtotal > 0 ? `<div style="font-size:13px;color:var(--text-sub);">¥${subtotal.toLocaleString()}</div>` : ''}
-              <button onclick="deleteHistory('${item.id}')" style="background:none;border:none;color:var(--text-sub);font-size:18px;cursor:pointer;padding:4px;">&times;</button>
+              <button onclick="${item.historyIds.length > 1 ? `deleteHistoryGroup('${item.historyIds.join(',')}')` : `deleteHistory('${item.historyIds[0]}')`}" style="background:none;border:none;color:var(--text-sub);font-size:18px;cursor:pointer;padding:4px;">&times;</button>
             </div>
           </div>`;
       });
@@ -1822,6 +1847,28 @@ function deleteHistory(id) {
     if (sbClient && isOnline) {
       sbClient.from('order_history').delete().eq('id', id).eq('tenant_id', TENANT_ID)
         .then(({ error }) => { if (error) console.error('deleteHistory失敗:', error); });
+    }
+  });
+}
+
+function deleteHistoryGroup(idsCsv) {
+  const ids = idsCsv.split(',').filter(Boolean);
+  const items = DATA.orderHistory.filter(h => ids.includes(h.id));
+  if (items.length <= 1) {
+    if (items[0]) deleteHistory(items[0].id);
+    return;
+  }
+  if (!confirm(`同じ仕入先・商材・発注日の合算履歴（${items.length}件分）を削除しますか？`)) return;
+  lastDeleted = items.map(h => ({ ...h }));
+  const idSet = new Set(ids);
+  DATA.orderHistory = DATA.orderHistory.filter(h => !idSet.has(h.id));
+  saveData(DATA);
+  renderContent();
+  showUndoToast();
+  _schedulePendingDelete(() => {
+    if (sbClient && isOnline) {
+      sbClient.from('order_history').delete().in('id', ids).eq('tenant_id', TENANT_ID)
+        .then(({ error }) => { if (error) console.error('deleteHistoryGroup失敗:', error); });
     }
   });
 }
