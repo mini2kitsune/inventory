@@ -814,6 +814,7 @@ function getDefaultData() {
 
 let DATA = loadDataFromCache() || getDefaultData();
 const CURRENT_VENDOR_KEY = 'inventory_current_vendor_id';
+const PENDING_STOCK_KEY = `inventory_pending_stock_${TENANT_ID}`;
 let currentVendorId = '';
 function getPreferredVendorId(data = DATA) {
   const active = (data.vendors || []).filter(v => v.isActive !== false);
@@ -829,7 +830,19 @@ currentVendorId = getPreferredVendorId(DATA);
 let currentView = 'stock'; // stock | order | history
 let orderCart = []; // { productId, quantity }
 let selectedOrderVendorIds = null; // null = all selected
-let pendingChanges = {}; // productId -> newStock (before save)
+function loadPendingStockChanges() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PENDING_STOCK_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch(e) { return {}; }
+}
+function persistPendingStockChanges() {
+  try {
+    if (Object.keys(pendingChanges).length) localStorage.setItem(PENDING_STOCK_KEY, JSON.stringify(pendingChanges));
+    else localStorage.removeItem(PENDING_STOCK_KEY);
+  } catch(e) { console.warn('棚卸中の変更を端末に保存できませんでした:', e); }
+}
+let pendingChanges = loadPendingStockChanges(); // productId -> newStock (before save)
 
 // ============================
 // P1: Offline Sync Queue
@@ -849,6 +862,16 @@ function enqueueSync(op) {
   const q = getSyncQueue();
   q.push(op);
   saveSyncQueue(q);
+}
+
+function enqueueOrderHistory(entry) {
+  const remoteId = window.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 3 | 8)).toString(16);
+  });
+  enqueueSync({ type: 'insert_order_history', localId: entry.id, remoteId,
+    productId: entry.productId, vendorId: entry.vendorId, orderDate: entry.date,
+    quantity: entry.quantity, stockAtOrder: entry.stockAtOrder });
 }
 
 function updateSyncDisplay() {
@@ -945,7 +968,31 @@ async function processSyncQueue() {
         }
         case 'update_history_dates': {
           const { error } = await sbClient.from('order_history').update({ order_date: op.orderDate })
-            .in('id', op.ids).eq('tenant_id', TENANT_ID);
+            .in('id', op.ids.map(id => idMap[id] || id)).eq('tenant_id', TENANT_ID);
+          ok = !error;
+          break;
+        }
+        case 'insert_order_history': {
+          const { error } = await sbClient.from('order_history').insert({
+            id: op.remoteId, tenant_id: TENANT_ID,
+            product_id: idMap[op.productId] || op.productId,
+            vendor_id: idMap[op.vendorId] || op.vendorId,
+            order_date: op.orderDate, quantity: op.quantity, stock_at_order: op.stockAtOrder,
+          });
+          if (error && error.code === '23505') {
+            const { data } = await sbClient.from('order_history').select('id').eq('id', op.remoteId).eq('tenant_id', TENANT_ID).maybeSingle();
+            ok = !!data;
+          } else ok = !error;
+          if (ok) {
+            const local = DATA.orderHistory.find(h => h.id === op.localId);
+            if (local) local.id = op.remoteId;
+            saveData(DATA);
+          }
+          break;
+        }
+        case 'delete_order_history': {
+          const { error } = await sbClient.from('order_history').delete()
+            .in('id', op.ids.map(id => idMap[id] || id)).eq('tenant_id', TENANT_ID);
           ok = !error;
           break;
         }
@@ -1153,29 +1200,12 @@ async function importHistoryCsv(event) {
   if (newEntries.length === 0) { showToast('取り込めるデータがありませんでした'); return; }
 
   newEntries.forEach(e => DATA.orderHistory.push(e));
+  newEntries.forEach(enqueueOrderHistory);
   saveData(DATA);
   render();
   showToast(`${newEntries.length}件の発注履歴を取り込みました`);
 
-  if (sbClient && isOnline) {
-    for (const entry of newEntries) {
-      try {
-        const { data, error } = await sbClient.from('order_history').insert({
-          tenant_id: TENANT_ID,
-          product_id: entry.productId,
-          vendor_id: entry.vendorId,
-          order_date: entry.date,
-          quantity: entry.quantity,
-          stock_at_order: entry.stockAtOrder,
-        }).select('id').single();
-        if (data && !error) {
-          const local = DATA.orderHistory.find(h => h.id === entry.id);
-          if (local) local.id = data.id;
-        }
-      } catch(e) { console.error('CSV import insert失敗:', e); }
-    }
-    saveData(DATA);
-  }
+  await processSyncQueue();
 }
 
 async function setNewPassword() {
@@ -1280,7 +1310,10 @@ async function loadDataFromSupabase() {
       sbClient.from('stocktaking_history').select('*').eq('tenant_id', TENANT_ID).order('stocktaking_date', { ascending: false }).limit(200),
     ]);
 
-    if (vRes.error) throw vRes.error;
+    for (const result of [vRes, pRes, iRes, ohRes, shRes]) {
+      if (result?.error) throw result.error;
+      if (!Array.isArray(result?.data)) throw new Error('Supabaseから一覧データを取得できませんでした');
+    }
 
     const invMap = {};
     (iRes.data || []).forEach(inv => { invMap[inv.product_id] = inv; });
@@ -1339,6 +1372,20 @@ async function loadDataFromSupabase() {
       previousQuantity: h.previous_quantity,
     }));
 
+    // Keep queued local history visible if its upload still failed while reads succeeded.
+    const queuedOps = getSyncQueue();
+    const cachedHistory = loadDataFromCache()?.orderHistory || [];
+    const queuedDeletes = new Set(queuedOps.filter(op => op.type === 'delete_order_history').flatMap(op => op.ids || []));
+    DATA.orderHistory = DATA.orderHistory.filter(h => !queuedDeletes.has(h.id));
+    for (const op of queuedOps) {
+      if (op.type === 'insert_order_history') {
+        const local = cachedHistory.find(h => h.id === op.localId);
+        if (local && !DATA.orderHistory.some(h => h.id === local.id || h.id === op.remoteId)) DATA.orderHistory.push(local);
+      } else if (op.type === 'update_history_dates') {
+        DATA.orderHistory.forEach(h => { if (op.ids.includes(h.id)) h.date = op.orderDate; });
+      }
+    }
+
     await seedBlankToelReferenceValues();
     await copyTokyoRangeToFujishin();
 
@@ -1388,6 +1435,7 @@ async function init() {
 
   if (session) {
     currentUser = session.user;
+    await processSyncQueue();
     document.getElementById('loginOverlay').style.display = 'none';
 
     // Show cached data immediately (stale-while-revalidate)
@@ -1418,6 +1466,7 @@ async function init() {
   sbClient.auth.onAuthStateChange(async (event, session) => {
     if (event === 'SIGNED_IN' && session) {
       currentUser = session.user;
+      await processSyncQueue();
       document.getElementById('loginOverlay').style.display = 'none';
       // Save local backup before DATA is overwritten by Supabase load
       const localSnapshot = loadDataFromCache();
@@ -1851,7 +1900,7 @@ function renderHistoryView(el) {
             <div style="display:flex;align-items:center;gap:10px;">
               <div style="font-size:20px;font-weight:700;color:var(--accent-light);">×${item.quantity}</div>
               ${subtotal > 0 ? `<div style="font-size:13px;color:var(--text-sub);">¥${subtotal.toLocaleString()}</div>` : ''}
-              <button onclick="openEditHistoryQuantity('${item.productId}','${item.vendorId}','${toJSTDateKey(new Date(item.date))}')" aria-label="${esc(item.productName)}の発注数量を編集" title="発注数量を編集" style="width:30px;height:30px;flex:0 0 30px;border:1px solid rgba(108,99,255,0.28);border-radius:8px;background:var(--surface2);color:var(--accent-light);font-size:17px;font-weight:700;cursor:pointer;">✎</button>
+              <button onclick="openEditHistoryQuantity('${item.productId}','${item.vendorId}','${toJSTDateKey(new Date(item.date))}')" aria-label="${esc(item.productName)}の発注数量を編集" title="発注数量を編集" style="min-height:32px;padding:0 9px;flex:0 0 auto;border:1px solid rgba(108,99,255,0.28);border-radius:8px;background:var(--surface2);color:var(--accent-light);font-size:12px;font-weight:700;cursor:pointer;">編集</button>
               <button onclick="deleteHistoryByGroupKey('${item.productId}','${item.vendorId}','${toJSTDateKey(new Date(item.date))}')" style="background:none;border:none;color:var(--text-sub);font-size:18px;cursor:pointer;padding:4px;">&times;</button>
             </div>
           </div>`;
@@ -1885,10 +1934,7 @@ function deleteHistoryByDate(dateKey) {
   renderContent();
   showUndoToast();
   _schedulePendingDelete(() => {
-    if (sbClient && isOnline && ids.length > 0) {
-      sbClient.from('order_history').delete().in('id', ids).eq('tenant_id', TENANT_ID)
-        .then(({ error }) => { if (error) console.error('deleteHistoryByDate失敗:', error); });
-    }
+    if (ids.length) { enqueueSync({ type: 'delete_order_history', ids }); processSyncQueue(); }
   });
 }
 
@@ -1926,19 +1972,7 @@ async function saveHistoryDateChange() {
 
   const orderDate = new Date(`${newDateKey}T12:00:00`).toISOString();
   const ids = entries.map(h => h.id);
-  if (sbClient && isOnline) {
-    try {
-      const { error } = await sbClient.from('order_history').update({ order_date: orderDate })
-        .in('id', ids).eq('tenant_id', TENANT_ID);
-      if (error) throw error;
-    } catch (error) {
-      console.error('履歴日付更新失敗:', error);
-      showToast('日付を保存できませんでした。通信を確認してください');
-      return;
-    }
-  } else {
-    enqueueSync({ type: 'update_history_dates', ids, orderDate });
-  }
+  enqueueSync({ type: 'update_history_dates', ids, orderDate });
 
   entries.forEach(h => { h.date = orderDate; });
   saveData(DATA);
@@ -1959,10 +1993,7 @@ function deleteHistory(id) {
   renderContent();
   showUndoToast();
   _schedulePendingDelete(() => {
-    if (sbClient && isOnline) {
-      sbClient.from('order_history').delete().eq('id', id).eq('tenant_id', TENANT_ID)
-        .then(({ error }) => { if (error) console.error('deleteHistory失敗:', error); });
-    }
+    enqueueSync({ type: 'delete_order_history', ids: [id] }); processSyncQueue();
   });
 }
 
@@ -1981,10 +2012,7 @@ function deleteHistoryGroup(idsCsv) {
   renderContent();
   showUndoToast();
   _schedulePendingDelete(() => {
-    if (sbClient && isOnline) {
-      sbClient.from('order_history').delete().in('id', ids).eq('tenant_id', TENANT_ID)
-        .then(({ error }) => { if (error) console.error('deleteHistoryGroup失敗:', error); });
-    }
+    enqueueSync({ type: 'delete_order_history', ids }); processSyncQueue();
   });
 }
 
@@ -2113,6 +2141,7 @@ function changeStock(productId, delta) {
   } else {
     pendingChanges[productId] = newVal;
   }
+  persistPendingStockChanges();
 
   // Update UI without full re-render for speed
   const qtyEl = document.getElementById('qty-' + productId);
@@ -2142,6 +2171,7 @@ async function saveStockChanges() {
     p.stock = newStock;
   }
   pendingChanges = {};
+  persistPendingStockChanges();
   saveData(DATA);
   render();
 
@@ -2902,7 +2932,7 @@ async function saveEditedHistoryQuantity() {
 function initHistoryModal() {
   document.querySelector('#modal-addHistory .modal').scrollTop = 0;
   // 今日の日付をデフォルトに
-  document.getElementById('histDate').value = new Date().toISOString().slice(0, 10);
+  document.getElementById('histDate').value = toJSTDateKey(new Date());
   const sel = document.getElementById('histVendor');
   sel.innerHTML = DATA.vendors.filter(v => v.isActive !== false).map(v =>
     `<option value="${v.id}"${v.id === currentVendorId ? ' selected' : ''}>${esc(v.name)}</option>`
@@ -2987,6 +3017,7 @@ async function saveManualHistory() {
 
   // Add to local DATA (simple, no merge)
   newEntries.forEach(entry => DATA.orderHistory.push(entry));
+  newEntries.forEach(enqueueOrderHistory);
   saveData(DATA);
   manualHistoryItems = {};
   closeModal('addHistory');
@@ -2994,29 +3025,7 @@ async function saveManualHistory() {
   showToast(`${entries.length}件の履歴を追加しました`);
   render();
 
-  // Supabase sync (fire-and-forget)
-  if (sbClient && isOnline) {
-    for (const entry of newEntries) {
-      try {
-        const { data, error } = await sbClient.from('order_history').insert({
-          tenant_id: TENANT_ID,
-          product_id: entry.productId,
-          vendor_id: entry.vendorId,
-          order_date: entry.date,
-          quantity: entry.quantity,
-          stock_at_order: entry.stockAtOrder,
-        }).select('id').single();
-        // Update the entry ID with the real Supabase UUID for future deletions
-        if (data && !error) {
-          const localEntry = DATA.orderHistory.find(h => h.id === entry.id);
-          if (localEntry) localEntry.id = data.id;
-        }
-      } catch(e) {
-        console.error('manual history insert失敗:', e);
-      }
-    }
-    saveData(DATA); // Save with updated IDs
-  }
+  await processSyncQueue();
 }
 
 function changeCartQty(index, delta) {
@@ -3041,14 +3050,11 @@ async function confirmOrder() {
   if (!confirm(`${targetItems.length}件の発注を確定しますか？`)) return;
 
   const now = new Date().toISOString();
-  const todayStr = toJSTDateKey(new Date(now));
   const checklistItems = [];
   targetItems.forEach(item => {
     const p = DATA.products.find(x => x.id === item.productId);
     if (!p) return;
-    // P3: ローカルマージ廃止。常に新規エントリをローカルに追加し、
-    //     サーバー側RPCがマージ済み行を返したら差し替える。
-    DATA.orderHistory.push({
+    const entry = {
       id: uid(),
       productId: item.productId,
       vendorId: p.vendorId,
@@ -3058,7 +3064,9 @@ async function confirmOrder() {
       quantity: item.quantity,
       stockAtOrder: p.stock,
       price: p.price || 0,
-    });
+    };
+    DATA.orderHistory.push(entry);
+    enqueueOrderHistory(entry);
     checklistItems.push({
       name: p.name,
       quantity: item.quantity,
@@ -3078,50 +3086,7 @@ async function confirmOrder() {
   window._lastChecklistItems = checklistItems;
   showChecklist(checklistItems);
 
-  // Supabase: confirm_order RPC（サーバー側でマージし返り値でローカル履歴を差し替え）
-  if (sbClient && isOnline) {
-    try {
-      const rpcItems = targetItems.map(item => {
-        const p = DATA.products.find(x => x.id === item.productId);
-        return {
-          product_id: item.productId,
-          vendor_id: p?.vendorId || '',
-          quantity: item.quantity,
-          stock_at_order: p?.stock ?? 0,
-        };
-      });
-      const { data: mergedRows, error } = await sbClient.rpc('confirm_order', {
-        p_tenant_id: TENANT_ID,
-        p_items: rpcItems,
-      });
-      if (error) {
-        console.error('confirm_order失敗:', error);
-      } else if (mergedRows && Array.isArray(mergedRows)) {
-        // ローカルに追加した仮エントリ（当日分）をサーバーのマージ済み行で置換
-        DATA.orderHistory = DATA.orderHistory.filter(h =>
-          !confirmedIds.has(h.productId) ||
-          toJSTDateKey(new Date(h.date)) !== todayStr
-        );
-        mergedRows.forEach(row => {
-          const p = DATA.products.find(x => x.id === row.productId);
-          DATA.orderHistory.push({
-            id: row.id,
-            productId: row.productId,
-            vendorId: row.vendorId,
-            productName: p?.name || '',
-            vendorName: DATA.vendors.find(v => v.id === row.vendorId)?.name || '',
-            date: row.date,
-            quantity: row.quantity,
-            stockAtOrder: row.stockAtOrder,
-            price: p?.price || 0,
-          });
-        });
-        saveData(DATA);
-      }
-    } catch(e) {
-      console.error('confirm_order失敗:', e);
-    }
-  }
+  await processSyncQueue();
 }
 
 function showChecklist(items) {
