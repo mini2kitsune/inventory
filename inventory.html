@@ -595,6 +595,23 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="modal-editHistoryDate">
+  <div class="modal" style="max-width:420px;">
+    <h2>履歴の日付を変更 <button class="modal-close" onclick="closeModal('editHistoryDate')">&times;</button></h2>
+    <div id="editHistoryDateTarget" style="font-weight:600;margin:4px 0 6px;"></div>
+    <div id="editHistoryDateCount" style="font-size:13px;color:var(--text-sub);margin-bottom:16px;"></div>
+    <div class="form-group">
+      <label class="form-label" for="editHistoryDateInput">変更後の日付</label>
+      <input class="form-input" id="editHistoryDateInput" type="date">
+    </div>
+    <div style="font-size:12px;color:var(--text-sub);margin:0 0 14px;">この仕入先・現在の日付にある履歴をまとめて変更します。</div>
+    <div style="display:flex;gap:8px;">
+      <button onclick="closeModal('editHistoryDate')" style="flex:1;padding:12px;background:var(--surface2);border:0;border-radius:10px;color:var(--text);font-size:14px;font-weight:600;cursor:pointer;">キャンセル</button>
+      <button class="action-btn" onclick="saveHistoryDateChange()" style="flex:1;">日付を変更</button>
+    </div>
+  </div>
+</div>
+
 <!-- 設定モーダル -->
 <div class="modal-overlay" id="modal-settings">
   <div class="modal">
@@ -923,6 +940,12 @@ async function processSyncQueue() {
         case 'delete_product': {
           const rid = idMap[op.id] || op.id;
           const { error } = await sbClient.from('products').update({ is_active: false }).eq('id', rid).eq('tenant_id', TENANT_ID);
+          ok = !error;
+          break;
+        }
+        case 'update_history_dates': {
+          const { error } = await sbClient.from('order_history').update({ order_date: op.orderDate })
+            .in('id', op.ids).eq('tenant_id', TENANT_ID);
           ok = !error;
           break;
         }
@@ -1784,19 +1807,24 @@ function renderHistoryView(el) {
     const vendorGroups = {};
     const vendorOrder = [];
     items.forEach(item => {
-      const vName = item.vendorName || '不明';
-      if (!vendorGroups[vName]) { vendorGroups[vName] = []; vendorOrder.push(vName); }
-      vendorGroups[vName].push(item);
+      const vendorId = item.vendorId || `unknown:${item.vendorName || ''}`;
+      if (!vendorGroups[vendorId]) { vendorGroups[vendorId] = []; vendorOrder.push(vendorId); }
+      vendorGroups[vendorId].push(item);
     });
-    vendorOrder.forEach(vName => {
-      const vItems = vendorGroups[vName].sort((a,b) => {
+    vendorOrder.forEach(vendorId => {
+      const vItems = vendorGroups[vendorId].sort((a,b) => {
         const pa = DATA.products.find(p => p.id === a.productId);
         const pb = DATA.products.find(p => p.id === b.productId);
         const so = compareProductDisplayOrder(pa || { name: a.productName }, pb || { name: b.productName });
         if (so !== 0) return so;
         return (a.productName || '').localeCompare(b.productName || '', 'ja');
       });
-      html += `<div style="font-size:12px;color:var(--accent-light);font-weight:700;margin:10px 0 4px;padding:4px 8px;background:rgba(108,99,255,0.1);border-radius:6px;">${esc(vName)}</div>`;
+      const vName = vItems[0]?.vendorName || '不明';
+      const rawEntryCount = vItems.reduce((sum, item) => sum + item.historyIds.length, 0);
+      html += `<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--accent-light);font-weight:700;margin:10px 0 4px;padding:4px 8px;background:rgba(108,99,255,0.1);border-radius:6px;">
+        <span>${esc(vName)}</span>
+        <button onclick="openHistoryDateEditor('${dateKey}','${vendorId}',${rawEntryCount})" style="padding:4px 7px;border:0;border-radius:6px;background:transparent;color:var(--text-sub);font-size:11px;font-weight:600;cursor:pointer;">日付修正</button>
+      </div>`;
       vItems.forEach(item => {
         const subtotal = item.totalAmount;
         html += `
@@ -1850,6 +1878,63 @@ function deleteHistoryByDate(dateKey) {
         .then(({ error }) => { if (error) console.error('deleteHistoryByDate失敗:', error); });
     }
   });
+}
+
+let historyDateEditTarget = null;
+
+function openHistoryDateEditor(dateKey, vendorId, displayedCount) {
+  const vendor = DATA.vendors.find(v => v.id === vendorId);
+  if (!vendor) { showToast('仕入先が見つかりません'); return; }
+  const entries = DATA.orderHistory.filter(h => h.vendorId === vendorId && toJSTDateKey(new Date(h.date)) === dateKey);
+  if (entries.length === 0) { showToast('変更する履歴がありません'); return; }
+  historyDateEditTarget = { dateKey, vendorId };
+  document.getElementById('editHistoryDateTarget').textContent = vendor.name;
+  document.getElementById('editHistoryDateCount').textContent = `${entries.length}件（${displayedCount}記録）の履歴の日付を変更します`;
+  document.getElementById('editHistoryDateInput').value = dateKey;
+  openModal('editHistoryDate');
+}
+
+async function saveHistoryDateChange() {
+  if (!historyDateEditTarget) return;
+  const newDateKey = document.getElementById('editHistoryDateInput').value;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(newDateKey)) {
+    showToast('変更後の日付を選択してください');
+    return;
+  }
+  const { dateKey, vendorId } = historyDateEditTarget;
+  if (newDateKey === dateKey) {
+    closeModal('editHistoryDate');
+    historyDateEditTarget = null;
+    return;
+  }
+  const entries = DATA.orderHistory.filter(h => h.vendorId === vendorId && toJSTDateKey(new Date(h.date)) === dateKey);
+  if (entries.length === 0) { showToast('変更する履歴がありません'); return; }
+  const vendorName = DATA.vendors.find(v => v.id === vendorId)?.name || '仕入先';
+  if (!confirm(`${vendorName}の${dateKey}の履歴${entries.length}件すべてを${newDateKey}に変更しますか？`)) return;
+
+  const orderDate = new Date(`${newDateKey}T12:00:00`).toISOString();
+  const ids = entries.map(h => h.id);
+  if (sbClient && isOnline) {
+    try {
+      const { error } = await sbClient.from('order_history').update({ order_date: orderDate })
+        .in('id', ids).eq('tenant_id', TENANT_ID);
+      if (error) throw error;
+    } catch (error) {
+      console.error('履歴日付更新失敗:', error);
+      showToast('日付を保存できませんでした。通信を確認してください');
+      return;
+    }
+  } else {
+    enqueueSync({ type: 'update_history_dates', ids, orderDate });
+  }
+
+  entries.forEach(h => { h.date = orderDate; });
+  saveData(DATA);
+  historyMonth = newDateKey.slice(0, 7);
+  historyDateEditTarget = null;
+  closeModal('editHistoryDate');
+  render();
+  showToast('履歴の日付を変更しました');
 }
 
 function deleteHistory(id) {
