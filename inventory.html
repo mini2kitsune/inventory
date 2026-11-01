@@ -2667,12 +2667,16 @@ function getOldVendorReference(targetProduct) {
   const quantity = rows.reduce((sum, h) => sum + (Number(h.quantity) || 0), 0);
   if (!productIds.size || quantity <= 0) return { status: 'history-missing', mappingLabel, productCount: sourceProducts.length };
 
+  const dates = rows.map(h => new Date(h.date).getTime());
+  const monthsSpan = (Math.max(...dates) - Math.min(...dates)) / (1000 * 60 * 60 * 24 * 30);
+  const effectiveMonths = Math.min(6, Math.max(1, Math.round(monthsSpan + 1)));
   const sourceNames = [...productIds].map(id => DATA.products.find(p => p.id === id)?.name).filter(Boolean);
   return {
     status: 'ok',
     quantity,
     productCount: productIds.size,
-    monthlyPerProduct: quantity / 6,
+    monthlyPerProduct: quantity / effectiveMonths,
+    effectiveMonths,
     mappingLabel,
     sourceNames,
   };
@@ -2743,7 +2747,7 @@ function openProductEdit(id) {
       && Math.abs(Number(p.monthlyConsumption) - reference.monthlyPerProduct) < 0.05;
     const sourceNames = reference.sourceNames?.length ? `（${reference.sourceNames.join('、')}）` : '';
     const referenceMinimum = Math.max(1, Math.ceil(reference.monthlyPerProduct / 2));
-    refStat.textContent = `対応: ${reference.mappingLabel}。参照元${reference.productCount}商品${sourceNames}の直近6か月合計${reference.quantity}個 / 月平均${reference.monthlyPerProduct.toFixed(1)}個 / 最低在庫${referenceMinimum}個${referenceApplied ? '（商品に反映済み）' : ''}`;
+    refStat.textContent = `対応: ${reference.mappingLabel}。参照元${reference.productCount}商品${sourceNames}の直近${reference.effectiveMonths ?? 6}か月合計${reference.quantity}個 / 月平均${reference.monthlyPerProduct.toFixed(1)}個 / 最低在庫${referenceMinimum}個${referenceApplied ? '（商品に反映済み）' : ''}`;
     refBtn.style.display = referenceApplied ? 'none' : '';
   } else if (isToelAtMitsui) {
     const referenceStatus = {
