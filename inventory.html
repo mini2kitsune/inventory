@@ -2773,9 +2773,12 @@ function openProductEdit(id) {
   const statEl = document.getElementById('editActualStat');
   const useBtn = document.getElementById('useActualBtn');
   if (totalQty > 0) {
-    const monthly = totalQty / 6;
+    const dates = recentHistory.map(h => new Date(h.date).getTime());
+    const monthsSpan = (Math.max(...dates) - Math.min(...dates)) / (1000 * 60 * 60 * 24 * 30);
+    const effectiveMonths = Math.min(6, Math.max(1, Math.round(monthsSpan + 1)));
+    const monthly = totalQty / effectiveMonths;
     _editActualMonthly = monthly;
-    statEl.textContent = `実績: 月${monthly.toFixed(1)}個（直近6ヶ月 計${totalQty}個）`;
+    statEl.textContent = `実績: 月${monthly.toFixed(1)}個（直近${effectiveMonths}ヶ月 計${totalQty}個）`;
     useBtn.style.display = '';
   } else {
     _editActualMonthly = null;
