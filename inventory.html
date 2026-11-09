@@ -3271,6 +3271,7 @@ async function addProduct(andNext = false) {
     DATA.orderHistory.forEach(h => { if (h.productId === newId) h.productId = realId; });
     DATA.stocktakingHistory.forEach(h => { if (h.productId === newId) h.productId = realId; });
     saveData(DATA);
+    render();
     showToast('追加しました');
     lastSyncTime = new Date();
     updateSyncDisplay();
