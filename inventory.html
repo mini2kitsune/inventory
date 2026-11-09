@@ -562,7 +562,7 @@
     </div>
     <div class="form-group">
       <label class="form-label">仕入れ先</label>
-      <select class="form-select" id="histVendor" onchange="updateHistProducts()"></select>
+      <select class="form-select" id="histVendor" onchange="onHistVendorChange()"></select>
     </div>
     <div class="form-group">
       <div style="position:relative;">
@@ -2941,12 +2941,18 @@ function initHistoryModal() {
   // 今日の日付をデフォルトに
   document.getElementById('histDate').value = toJSTDateKey(new Date());
   const sel = document.getElementById('histVendor');
+  const savedHistVendorId = localStorage.getItem('inventory_hist_vendor_id') || '';
   sel.innerHTML = DATA.vendors.filter(v => v.isActive !== false).map(v =>
-    `<option value="${v.id}"${v.id === currentVendorId ? ' selected' : ''}>${esc(v.name)}</option>`
+    `<option value="${v.id}"${v.id === savedHistVendorId ? ' selected' : ''}>${esc(v.name)}</option>`
   ).join('');
   manualHistoryItems = {};
   const searchEl = document.getElementById('histSearch');
   if (searchEl) searchEl.value = '';
+  updateHistProducts();
+}
+
+function onHistVendorChange() {
+  localStorage.setItem('inventory_hist_vendor_id', document.getElementById('histVendor').value);
   updateHistProducts();
 }
 
