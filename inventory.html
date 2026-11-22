@@ -2831,6 +2831,8 @@ function mappingResolveOldName(name) {
 function dedupeCopyPairRows(orderHistory, products, vendors) {
   const vOk = new Map((vendors || []).map(v => [v.id, String(v.name || '').includes('東京理美容') || String(v.name || '').includes('フジシン')]));
   const pMap = new Map((products || []).map(p => [p.id, p]));
+  const tokyoV = new Set((vendors || []).filter(v => String(v.name || '').includes('東京理美容')).map(v => v.id));
+  const tokyoOf = id => tokyoV.has(pMap.get(id)?.vendorId);
   const groups = new Map();
   const out = [];
   (orderHistory || []).forEach(h => {
@@ -2845,7 +2847,9 @@ function dedupeCopyPairRows(orderHistory, products, vendors) {
   });
   groups.forEach(g => {
     const max = Math.max(...g.counts.values());
-    const keep = [...g.counts.entries()].find(([, c]) => c === max)[0];
+    const top = [...g.counts.entries()].filter(([, c]) => c === max).map(([id]) => id);
+    // 行数が同じときは複製元（仕入先が東京理美容）の商品を残す。東京がなければ先頭のまま。
+    const keep = top.find(id => tokyoOf(id)) || top[0];
     g.rows.filter(h => h.productId === keep).forEach(h => out.push(h));
   });
   return out;
@@ -2876,7 +2880,9 @@ function mappingHistoryStats(productIds, orderHistory, now) {
 
 function buildMappingTable(products, vendors, orderHistory, now) {
   products = products || []; vendors = vendors || [];
+  const rawHistoryLen = (orderHistory || []).length;
   orderHistory = dedupeCopyPairRows(orderHistory || [], products, vendors);
+  const copyDropped = rawHistoryLen - orderHistory.length; // フジシンへの複製として1回にまとめた行数
   const vname = id => vendors.find(v => v.id === id)?.name || '';
   const idsOf = pred => new Set(vendors.filter(pred).map(v => v.id));
   const tokyoIds = idsOf(v => String(v.name).includes('東京理美容'));
@@ -3019,7 +3025,7 @@ function buildMappingTable(products, vendors, orderHistory, now) {
   oldOnly.sort((a, b) => (b.unresolved ? 1 : 0) - (a.unresolved ? 1 : 0) || a.rowId.localeCompare(b.rowId, 'ja'));
 
   return {
-    certain, pending, oldOnly, quolineList,
+    certain, pending, oldOnly, quolineList, copyDropped,
     counts: { certain: certain.length, pending: pending.length, oldOnly: oldOnly.length, unresolved: oldOnly.filter(r => r.unresolved).length },
   };
 }
@@ -3091,7 +3097,9 @@ function renderMappingModal() {
   MAPPING_SYSTEM_ORDER.forEach(sys => {
     const list = t.certain.filter(r => r.system === sys);
     if (!list.length) return;
-    html += `<div style="font-size:12px;color:var(--text-sub);margin:8px 0 4px;">${esc(sys)} ${esc(MAPPING_SYSTEM_NOTES[sys] || '')}</div>` + list.map(mappingCardHtml).join('');
+    html += `<div style="font-size:12px;color:var(--text-sub);margin:8px 0 4px;">${esc(sys)} ${esc(MAPPING_SYSTEM_NOTES[sys] || '')}</div>`
+      + (sys === '②' && t.copyDropped > 0 ? `<div style="font-size:12px;color:var(--text-sub);margin-bottom:4px;">${esc(`フジシンへの複製分 ${t.copyDropped}件は1回だけ数えました`)}</div>` : '')
+      + list.map(mappingCardHtml).join('');
   });
   if (!t.certain.length) html += '<div style="font-size:12px;color:var(--text-sub);">なし</div>';
 
