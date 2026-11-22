@@ -2752,10 +2752,11 @@ function getOldVendorReference(targetProduct) {
 // MAPPING-PURE-BEGIN
 const MAPPING_WINDOW_DAYS = 180; // 設計書 §2 と同じ窓
 // 殿ご教示 2026-11-22: 下記すべての系統を「確実」として扱う（M=ミント等のメーカー色名との食い違いは注記のみ）
-const MAPPING_CERTAIN_FAMILIES = ['A', 'N', 'V', 'P', 'R', 'M', 'MT', 'LT', 'APRICOT'];
-// トエル側「アプリコット」の色番。トエルのカタログに該当色が無いため空（推測で埋めない）。
-// 殿のご回答で判明したら、ここに色番（例 'E:ORANGE/8' ※大文字・スラッシュ区切り）を足すだけで反映される。
-const TOEL_APRICOT_CODES = [];
+const MAPPING_CERTAIN_FAMILIES = ['A', 'N', 'V', 'P', 'R', 'M', 'MT', 'LT', 'TE'];
+// トエル側 Te（テラコッタ）の色番の形。getToelProductCode の結果（大文字化済み）に当てる。
+// 例: TE/8・TE8・TE 8・テラコッタ8・TERRACOTTA/8 → 明度8。明度が無い・読めない名前は拾わず「その他（要確認）」に出す。
+// 明度の展開は推測しない（アプリ内に実在する Te 系商品の明度だけが旧オレンジの同じ明度と結ばれる）。
+const TOEL_TE_CODE_PATTERN = /^(?:TE|テラコッタ|TERRACOTTA)\s*[\/・.\-]?\s*(\d+)?$/;
 // 旧（アジアンカラーフェス）側の色名（カタカナ）と記号（アルファベット）。どちらの表記も同じ系統に解決する。
 const MAPPING_OLD_FAMILIES = {
   A: { aliases: ['アッシュ', 'ASH'], codes: ['A'] },
@@ -2766,16 +2767,18 @@ const MAPPING_OLD_FAMILIES = {
   MT: { aliases: ['グレイ', 'グレー', 'GRAY', 'GREY'], codes: ['MT', 'G'] },
   M: { aliases: ['マット', 'MATTE'], codes: ['M'] },
   LT: { aliases: ['ライトナー', 'LIGHTENER'], codes: ['LT'] },
-  APRICOT: { aliases: ['オレンジ', 'ORANGE'], codes: ['OR', 'O'] },
+  TE: { aliases: ['オレンジ', 'ORANGE'], codes: ['OR', 'O'] }, // 旧アジアンカラーフェスのオレンジ → トエル Te（殿ご教示 2026-11-22 Q-D）
 };
-const MAPPING_LEVELLESS_FAMILIES = ['LT', 'APRICOT']; // 明度なしでも系統として扱える
-const MAPPING_FAMILY_ORDER = ['A', 'N', 'M', 'MT', 'V', 'P', 'R', 'LT', 'APRICOT'];
-const MAPPING_FAMILY_LABEL = { A: 'アッシュ', N: 'ナチュラル', V: 'バイオレット', P: 'ピンク', R: 'レッド', MT: 'グレイ', M: 'マット', LT: 'ライトナー', APRICOT: 'オレンジ' };
+const MAPPING_LEVELLESS_FAMILIES = ['LT']; // 明度なしでも系統として扱える（オレンジは明度が無ければ結べないので含めない）
+const MAPPING_FAMILY_ORDER = ['A', 'N', 'M', 'MT', 'V', 'P', 'R', 'LT', 'TE'];
+const MAPPING_FAMILY_LABEL = { A: 'アッシュ', N: 'ナチュラル', V: 'バイオレット', P: 'ピンク', R: 'レッド', MT: 'グレイ', M: 'マット', LT: 'ライトナー', TE: 'オレンジ' };
 const MAPPING_SYSTEM_ORDER = ['①', '②', '③④', '他'];
 const MAPPING_QUOLINE_PATTERN = /クオライン|コスメ|プリズム|アフターローション|アジャスト/;
 const MAPPING_SOURCES = {
   toel: { label: 'トエル 色番体系', url: 'https://www.beautygarage.jp/p/247482' },
   asian: { label: 'アジアンカラーフェス', url: 'https://www.beautygarage.jp/p/148933' },
+  te: { label: 'トエル Te（テラコッタ）', url: 'https://www.beautopia.jp/197401/' },
+  asianOrange: { label: 'アジアンカラーフェス オレンジ', url: 'https://www.beautygarage.jp/p/148943' },
   quoline: { label: 'クオライン', url: 'https://www.beautygarage.jp/pickup/arimino-quoline' },
   cosme: { label: 'コスメカール', url: 'https://www.arimino.co.jp/corporate/wp-content/uploads/2024/03/cosme_series2504.pdf' },
   utet: { label: 'ウトエト', url: 'https://www.wwdjapan.com/articles/1873599' },
@@ -2787,7 +2790,6 @@ const MAPPING_REASON_TEXT = {
   R3: 'R3 対応する旧がない',
   R4: 'R4 対応する新がない',
   R5: 'R5 出典で関係を確かめられない',
-  R8: 'R8 殿ご教示は「アプリコット」だがトエルに該当色なし（候補: e:Orange・トエル側色番は未確定）',
   R9: 'R9 商品名をどの系統にも解決できない（表記を拾えず）',
 };
 
@@ -2906,7 +2908,6 @@ function buildMappingTable(products, vendors, orderHistory, now) {
     }, extra || {});
   };
 
-  const matchedApricot = new Set();
   products.filter(p => mitsuiIds.has(p.vendorId) && p.active !== false && isToelProduct(p)).forEach(p => {
     const code = getToelProductCode(p);
     const newP = { id: p.id, name: p.name, vendorName: vname(p.vendorId) };
@@ -2921,12 +2922,12 @@ function buildMappingTable(products, vendors, orderHistory, now) {
       return;
     }
     let family = null; let level = null;
-    if (TOEL_APRICOT_CODES.includes(code)) {
-      family = 'APRICOT'; level = (code.match(/(\d+)$/) || [])[1]; level = level === undefined ? null : Number(level);
-      matchedApricot.add(p.id);
+    const teMatch = code.match(TOEL_TE_CODE_PATTERN);
+    if (teMatch) {
+      family = 'TE'; level = teMatch[1] === undefined ? null : Number(teMatch[1]);
     } else {
       const ident = getToelReferenceIdentity(p);
-      if (ident && ident.family !== 'APRICOT' && Object.prototype.hasOwnProperty.call(MAPPING_OLD_FAMILIES, ident.family)) { family = ident.family; level = ident.level; }
+      if (ident && Object.prototype.hasOwnProperty.call(MAPPING_OLD_FAMILIES, ident.family)) { family = ident.family; level = ident.level; }
     }
     if (!family) { // その他（Be・e: 系など）
       rows.push(mk('他', p.name, newP, [], '要確認', ['R3'], [], ['toel'], { sortKey: [3, 0, 0] }));
@@ -2936,12 +2937,12 @@ function buildMappingTable(products, vendors, orderHistory, now) {
       const r = resolved.get(o.id);
       if (!r || r.status !== 'ok' || r.family !== family) return false;
       if (family === 'LT') return true;
-      if (family === 'APRICOT' && level === null) return true;
       return r.level !== null && r.level === level;
     });
     const notes = [];
     if (family === 'M') notes.push('メーカー色名は M=ミント／旧=マット。殿ご教示（2026-11-22）で置き換えと確定（注記のみ）');
     if (family === 'MT') notes.push('メーカー色名は Mt=モノトーン／旧=グレイ。殿ご教示（2026-11-22）で確定（注記のみ）');
+    if (family === 'TE') notes.push('Te はトエルの混色ライン「テラコッタ」（2026-02-18 新発売。出典: beautopia）。メーカー資料上はオレンジ系の色名ではないが、殿ご教示（2026-11-22）でアジアンカラーフェスのオレンジ→Te と確定（注記のみ）。明度が同じ数字でも色の強さが同じとは限らないため、殿の確認をお願いします');
     cands.forEach(o => {
       if (!(family in toelReferenceColorFamilies) || !getSourceColorIdentity(o.name, family)) {
         notes.push(`既存の参考値計算では拾われない表記「${o.name}」。この表だけ殿ご教示の対応で拾った`);
@@ -2950,17 +2951,9 @@ function buildMappingTable(products, vendors, orderHistory, now) {
     const lv = new Set(cands.map(o => resolved.get(o.id).level));
     const reasons = !cands.length ? ['R3'] : (lv.size > 1 ? ['R1'] : []);
     const certain = !reasons.length && MAPPING_CERTAIN_FAMILIES.includes(family);
-    rows.push(mk('①', code, newP, cands.map(oldRef), certain ? '確実' : '要確認', reasons, [...new Set(notes)], ['toel', 'asian'],
+    rows.push(mk('①', code, newP, cands.map(oldRef), certain ? '確実' : '要確認', reasons, [...new Set(notes)], family === 'TE' ? ['toel', 'asian', 'te', 'asianOrange'] : ['toel', 'asian'],
       { family, level, sortKey: [0, MAPPING_FAMILY_ORDER.indexOf(family), -(level || 0)], basis: '殿ご教示 2026-11-22' }));
   });
-
-  // トエル側にアプリコット（オレンジ）の色番が定まるまでは、旧オレンジを1行にまとめて要確認で出す
-  if (!matchedApricot.size) {
-    const orange = tokyoP.filter(o => resolved.get(o.id)?.status === 'ok' && resolved.get(o.id).family === 'APRICOT');
-    rows.push(mk('①', 'アプリコット', { id: null, name: 'アプリコット（トエル側に該当色なし・候補 e:Orange）', vendorName: 'ミツイ' },
-      orange.map(oldRef), '要確認', ['R8'], ['殿ご教示 2026-11-22: オレンジ→アプリコット。トエル側の色番が定まれば TOEL_APRICOT_CODES に足すだけで反映'], ['toel', 'asian'],
-      { family: 'APRICOT', sortKey: [0, MAPPING_FAMILY_ORDER.indexOf('APRICOT'), 0], basis: '殿ご教示 2026-11-22' }));
-  }
 
   // ③④ ラボラボ（ウトエト）・その他（ナシード）
   products.filter(p => laboIds.has(p.vendorId) && p.active !== false).forEach(p => {
@@ -3013,7 +3006,7 @@ function buildMappingTable(products, vendors, orderHistory, now) {
       let hint = '';
       if (unresolved) { reasons.push('R9'); hint = r.status === 'nolevel' ? `系統は「${MAPPING_FAMILY_LABEL[r.family]}」と読めるが明度なし` : (r.status === 'ambiguous' ? '複数の系統に当たる・明度が食い違う' : 'どの系統にも当たらない'); }
       else if (inQuoline) hint = '③④の旧の一覧（殿が選ぶ）';
-      else if (r.status === 'ok') hint = `${MAPPING_FAMILY_LABEL[r.family]}${r.level === null ? '' : r.level}に対応するトエルがありません`;
+      else if (r.status === 'ok') hint = `${MAPPING_FAMILY_LABEL[r.family]}${r.level === null ? '' : r.level}に対応するトエル${r.family === 'TE' ? '（Te）' : ''}がありません`;
       return {
         rowId: `旧-${tokyoIds.has(p.vendorId) ? '東京' : 'フジ'}-${p.name}`, system: '旧のみ', old: oldRef(p),
         reasons, hint, unresolved, family: r.family, level: r.level,
