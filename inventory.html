@@ -555,6 +555,7 @@
         <select class="form-input" id="editPredProduct"></select>
         <button onclick="addEditPred()" style="padding:8px 12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--accent-light);font-size:13px;font-weight:600;cursor:pointer;">この商材を後継元にする</button>
       </div>
+      <a href="#mapping" onclick="openMappingModal();return false;" style="display:inline-block;margin-top:8px;font-size:12px;color:var(--accent-light);">旧→新 対応表を見る</a>
     </div>
     <button class="action-btn" onclick="saveProductEdit()" style="margin-top:8px">保存</button>
     <button onclick="duplicateProduct()" style="width:100%;margin-top:12px;padding:12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:12px;color:var(--accent-light);font-size:14px;font-weight:600;cursor:pointer;">複製して追加</button>
@@ -779,6 +780,14 @@
   <div class="modal">
     <h2>非表示の商品 <button class="modal-close" onclick="closeModal('hiddenProducts')">&times;</button></h2>
     <div id="hiddenProductList"><div style="font-size:13px;color:var(--text-sub);padding:8px 0;">読み込み中...</div></div>
+  </div>
+</div>
+
+<!-- 旧→新 対応表（確認用・読み取り専用） -->
+<div class="modal-overlay" id="modal-mapping">
+  <div class="modal">
+    <h2>旧→新 対応表（確認用） <button class="modal-close" onclick="closeMappingModal()">&times;</button></h2>
+    <div id="mappingBody"></div>
   </div>
 </div>
 
@@ -1512,6 +1521,7 @@ async function init() {
     await loadDataFromSupabase();
     setupRealtime();
     render();
+    maybeOpenMappingFromHash();
   } else {
     showLoginForm();
   }
@@ -1532,6 +1542,7 @@ async function init() {
       currentVendorId = getPreferredVendorId(DATA);
       persistCurrentVendorId();
       render();
+      maybeOpenMappingFromHash();
     } else if (event === 'SIGNED_OUT') {
       currentUser = null;
       DATA = getDefaultData();
@@ -2737,6 +2748,364 @@ function getOldVendorReference(targetProduct) {
   };
 }
 
+// ---- 旧→新 対応表（確認用・読み取り専用）。docs/inventory_mapping_table_proposal.md §7 ----
+// MAPPING-PURE-BEGIN
+const MAPPING_WINDOW_DAYS = 180; // 設計書 §2 と同じ窓
+// 殿ご教示 2026-11-22: 下記すべての系統を「確実」として扱う（M=ミント等のメーカー色名との食い違いは注記のみ）
+const MAPPING_CERTAIN_FAMILIES = ['A', 'N', 'V', 'P', 'R', 'M', 'MT', 'LT', 'APRICOT'];
+// トエル側「アプリコット」の色番。トエルのカタログに該当色が無いため空（推測で埋めない）。
+// 殿のご回答で判明したら、ここに色番（例 'E:ORANGE/8' ※大文字・スラッシュ区切り）を足すだけで反映される。
+const TOEL_APRICOT_CODES = [];
+// 旧（アジアンカラーフェス）側の色名（カタカナ）と記号（アルファベット）。どちらの表記も同じ系統に解決する。
+const MAPPING_OLD_FAMILIES = {
+  A: { aliases: ['アッシュ', 'ASH'], codes: ['A'] },
+  N: { aliases: ['ナチュラル', 'NATURAL'], codes: ['N'] },
+  V: { aliases: ['バイオレット', 'ヴァイオレット', 'VIOLET'], codes: ['V'] },
+  P: { aliases: ['ピンク', 'PINK'], codes: ['P'] },
+  R: { aliases: ['レッド', 'RED'], codes: ['R'] },
+  MT: { aliases: ['グレイ', 'グレー', 'GRAY', 'GREY'], codes: ['MT', 'G'] },
+  M: { aliases: ['マット', 'MATTE'], codes: ['M'] },
+  LT: { aliases: ['ライトナー', 'LIGHTENER'], codes: ['LT'] },
+  APRICOT: { aliases: ['オレンジ', 'ORANGE'], codes: ['OR', 'O'] },
+};
+const MAPPING_LEVELLESS_FAMILIES = ['LT', 'APRICOT']; // 明度なしでも系統として扱える
+const MAPPING_FAMILY_ORDER = ['A', 'N', 'M', 'MT', 'V', 'P', 'R', 'LT', 'APRICOT'];
+const MAPPING_FAMILY_LABEL = { A: 'アッシュ', N: 'ナチュラル', V: 'バイオレット', P: 'ピンク', R: 'レッド', MT: 'グレイ', M: 'マット', LT: 'ライトナー', APRICOT: 'オレンジ' };
+const MAPPING_SYSTEM_ORDER = ['①', '②', '③④', '他'];
+const MAPPING_QUOLINE_PATTERN = /クオライン|コスメ|プリズム|アフターローション|アジャスト/;
+const MAPPING_SOURCES = {
+  toel: { label: 'トエル 色番体系', url: 'https://www.beautygarage.jp/p/247482' },
+  asian: { label: 'アジアンカラーフェス', url: 'https://www.beautygarage.jp/p/148933' },
+  quoline: { label: 'クオライン', url: 'https://www.beautygarage.jp/pickup/arimino-quoline' },
+  cosme: { label: 'コスメカール', url: 'https://www.arimino.co.jp/corporate/wp-content/uploads/2024/03/cosme_series2504.pdf' },
+  utet: { label: 'ウトエト', url: 'https://www.wwdjapan.com/articles/1873599' },
+  numberthree: { label: 'ナンバースリー', url: 'https://www.beautygarage.jp/p/150213' },
+};
+const MAPPING_REASON_TEXT = {
+  R1: 'R1 候補が複数・そろわない',
+  R2: 'R2 照合の規則がない（旧と新でメーカーが違う）',
+  R3: 'R3 対応する旧がない',
+  R4: 'R4 対応する新がない',
+  R5: 'R5 出典で関係を確かめられない',
+  R8: 'R8 殿ご教示は「アプリコット」だがトエルに該当色なし（候補: e:Orange・トエル側色番は未確定）',
+  R9: 'R9 商品名をどの系統にも解決できない（表記を拾えず）',
+};
+
+// 旧商品名 → 系統と明度。カタカナ表記（アッシュ6・6アッシュ）とアルファベット表記（A6・A/6・G/8・OR8）の両方を拾う。
+// status: 'ok'(系統確定) | 'nolevel'(系統は分かるが明度なし) | 'ambiguous'(複数系統に当たる/明度が食い違う) | 'none'(どれにも当たらない)
+function mappingResolveOldName(name) {
+  const s = normalizeReferenceName(name);
+  const hits = []; // { family, level }
+  Object.keys(MAPPING_OLD_FAMILIES).forEach(family => {
+    const def = MAPPING_OLD_FAMILIES[family];
+    const levels = [];
+    let hit = false;
+    def.aliases.forEach(alias => {
+      const esc2 = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const after = s.match(new RegExp(esc2 + '\\s*[/・.\\-]?\\s*(\\d+)'));
+      const before = s.match(new RegExp('(\\d+)\\s*[/・.\\-]?\\s*' + esc2));
+      if (after) { hit = true; levels.push(Number(after[1])); }
+      else if (before) { hit = true; levels.push(Number(before[1])); }
+      else if (s.includes(alias)) { hit = true; }
+    });
+    def.codes.forEach(code => {
+      const withLevel = s.match(new RegExp('(?:^|[^A-Z0-9])' + code + '\\s*[/\\-.・]?\\s*(\\d+)(?:$|[^0-9])'));
+      if (withLevel) { hit = true; levels.push(Number(withLevel[1])); }
+      else if (MAPPING_LEVELLESS_FAMILIES.includes(family) && code.length > 1 && new RegExp('(?:^|[^A-Z0-9])' + code + '(?:$|[^A-Z0-9])').test(s)) { hit = true; }
+    });
+    if (hit) hits.push({ family, levels });
+  });
+  if (!hits.length) return { family: null, level: null, status: 'none' };
+  if (hits.length > 1) return { family: null, level: null, status: 'ambiguous', families: hits.map(h => h.family) };
+  const { family, levels } = hits[0];
+  const uniq = [...new Set(levels)];
+  if (uniq.length > 1) return { family, level: null, status: 'ambiguous', families: [family] };
+  const level = uniq.length ? uniq[0] : null;
+  if (level === null && !MAPPING_LEVELLESS_FAMILIES.includes(family)) return { family, level: null, status: 'nolevel' };
+  return { family, level, status: 'ok' };
+}
+
+// productIds の履歴を『合計』で集計（1トエル色＝対応する旧商品すべての合計＋トエル自身。月数の分母は全商品を通した1つの窓）。
+// lastDate は窓に関係なく最新の発注日、count/qty は now-180日〜now。
+function mappingHistoryStats(productIds, orderHistory, now) {
+  const ids = new Set(productIds || []);
+  const nowMs = now.getTime();
+  const fromMs = nowMs - MAPPING_WINDOW_DAYS * 86400000;
+  const seen = new Set();
+  const days = new Set();
+  let lastMs = null;
+  let qty = 0;
+  (orderHistory || []).forEach(h => {
+    if (!ids.has(h.productId)) return;
+    const t = new Date(h.date).getTime();
+    if (!Number.isFinite(t)) return;
+    // 殿ご指示（2026-11-22）: 薬剤違いの旧商品は同日・同数量でも別の発注。商品IDが違えば重複排除しない（同じ商品の完全に同じ行だけ1件）。
+    const key = `${h.productId}|${h.date}|${Number(h.quantity) || 0}|${Number(h.stockAtOrder) || 0}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (lastMs === null || t > lastMs) lastMs = t;
+    if (t >= fromMs && t <= nowMs) {
+      qty += Number(h.quantity) || 0;
+      days.add(toJSTDateKey(new Date(t)));
+    }
+  });
+  return { lastDate: lastMs === null ? null : toJSTDateKey(new Date(lastMs)), count: days.size, qty };
+}
+
+function buildMappingTable(products, vendors, orderHistory, now) {
+  products = products || []; vendors = vendors || []; orderHistory = orderHistory || [];
+  const vname = id => vendors.find(v => v.id === id)?.name || '';
+  const idsOf = pred => new Set(vendors.filter(pred).map(v => v.id));
+  const tokyoIds = idsOf(v => String(v.name).includes('東京理美容'));
+  const fujiIds = idsOf(v => String(v.name).includes('フジシン'));
+  const mitsuiIds = idsOf(v => v.name === 'ミツイ');
+  const laboIds = idsOf(v => String(v.name).includes('ラボラボ'));
+  const oldRef = p => ({ id: p.id, name: p.name, vendorName: vname(p.vendorId), active: p.active !== false });
+  const oldP = products.filter(p => tokyoIds.has(p.vendorId) || fujiIds.has(p.vendorId));
+  const tokyoP = products.filter(p => tokyoIds.has(p.vendorId));
+  const resolved = new Map(oldP.map(p => [p.id, mappingResolveOldName(p.name)]));
+  const rows = [];
+  const mk = (system, rowKey, newP, olds, judge, reasons, notes, sourceKeys, extra) => {
+    const oldsWithStats = olds.map(o => Object.assign({}, o, { stats: mappingHistoryStats([o.id], orderHistory, now) }));
+    const oldStats = mappingHistoryStats(olds.map(o => o.id), orderHistory, now); // 旧すべての合計（1つの窓）
+    const newStats = newP.id ? mappingHistoryStats([newP.id], orderHistory, now) : { lastDate: null, count: 0, qty: 0 };
+    const totalStats = mappingHistoryStats(olds.map(o => o.id).concat(newP.id ? [newP.id] : []), orderHistory, now); // 旧の合計＋トエル自身
+    const months = MAPPING_WINDOW_DAYS / 30;
+    return Object.assign({
+      rowId: `${system}-${rowKey}`, system, newP, olds: oldsWithStats, judge, reasons, notes, sourceKeys,
+      oldStats, newStats, totalStats, totalMonthly: totalStats.qty / months,
+    }, extra || {});
+  };
+
+  const matchedApricot = new Set();
+  products.filter(p => mitsuiIds.has(p.vendorId) && p.active !== false && isToelProduct(p)).forEach(p => {
+    const code = getToelProductCode(p);
+    const newP = { id: p.id, name: p.name, vendorName: vname(p.vendorId) };
+    const exact = toelReferenceSourceToTarget[code];
+    if (exact) { // ② フジシン cc → トエル 白髪染め
+      const cands = oldP.filter(o => getFujishinCc(o.name) === exact.cc);
+      const olds = cands.map(oldRef);
+      const sameName = new Set(cands.map(o => normalizeReferenceName(o.name))).size <= 1;
+      const reasons = !cands.length ? ['R3'] : (sameName ? [] : ['R1']);
+      rows.push(mk('②', code, newP, olds, reasons.length ? '要確認' : '確実', reasons, [], ['toel', 'numberthree'],
+        { sortKey: [1, Object.keys(toelReferenceSourceToTarget).indexOf(code), 0], basis: '既存の cc 対応（コード）' }));
+      return;
+    }
+    let family = null; let level = null;
+    if (TOEL_APRICOT_CODES.includes(code)) {
+      family = 'APRICOT'; level = (code.match(/(\d+)$/) || [])[1]; level = level === undefined ? null : Number(level);
+      matchedApricot.add(p.id);
+    } else {
+      const ident = getToelReferenceIdentity(p);
+      if (ident && ident.family !== 'APRICOT' && Object.prototype.hasOwnProperty.call(MAPPING_OLD_FAMILIES, ident.family)) { family = ident.family; level = ident.level; }
+    }
+    if (!family) { // その他（Be・e: 系など）
+      rows.push(mk('他', p.name, newP, [], '要確認', ['R3'], [], ['toel'], { sortKey: [3, 0, 0] }));
+      return;
+    }
+    const cands = tokyoP.filter(o => {
+      const r = resolved.get(o.id);
+      if (!r || r.status !== 'ok' || r.family !== family) return false;
+      if (family === 'LT') return true;
+      if (family === 'APRICOT' && level === null) return true;
+      return r.level !== null && r.level === level;
+    });
+    const notes = [];
+    if (family === 'M') notes.push('メーカー色名は M=ミント／旧=マット。殿ご教示（2026-11-22）で置き換えと確定（注記のみ）');
+    if (family === 'MT') notes.push('メーカー色名は Mt=モノトーン／旧=グレイ。殿ご教示（2026-11-22）で確定（注記のみ）');
+    cands.forEach(o => {
+      if (!(family in toelReferenceColorFamilies) || !getSourceColorIdentity(o.name, family)) {
+        notes.push(`既存の参考値計算では拾われない表記「${o.name}」。この表だけ殿ご教示の対応で拾った`);
+      }
+    });
+    const lv = new Set(cands.map(o => resolved.get(o.id).level));
+    const reasons = !cands.length ? ['R3'] : (lv.size > 1 ? ['R1'] : []);
+    const certain = !reasons.length && MAPPING_CERTAIN_FAMILIES.includes(family);
+    rows.push(mk('①', code, newP, cands.map(oldRef), certain ? '確実' : '要確認', reasons, [...new Set(notes)], ['toel', 'asian'],
+      { family, level, sortKey: [0, MAPPING_FAMILY_ORDER.indexOf(family), -(level || 0)], basis: '殿ご教示 2026-11-22' }));
+  });
+
+  // トエル側にアプリコット（オレンジ）の色番が定まるまでは、旧オレンジを1行にまとめて要確認で出す
+  if (!matchedApricot.size) {
+    const orange = tokyoP.filter(o => resolved.get(o.id)?.status === 'ok' && resolved.get(o.id).family === 'APRICOT');
+    rows.push(mk('①', 'アプリコット', { id: null, name: 'アプリコット（トエル側に該当色なし・候補 e:Orange）', vendorName: 'ミツイ' },
+      orange.map(oldRef), '要確認', ['R8'], ['殿ご教示 2026-11-22: オレンジ→アプリコット。トエル側の色番が定まれば TOEL_APRICOT_CODES に足すだけで反映'], ['toel', 'asian'],
+      { family: 'APRICOT', sortKey: [0, MAPPING_FAMILY_ORDER.indexOf('APRICOT'), 0], basis: '殿ご教示 2026-11-22' }));
+  }
+
+  // ③④ ラボラボ（ウトエト）・その他（ナシード）
+  products.filter(p => laboIds.has(p.vendorId) && p.active !== false).forEach(p => {
+    const newP = { id: p.id, name: p.name, vendorName: vname(p.vendorId) };
+    if (String(p.name).includes('ナシード')) rows.push(mk('他', p.name, newP, [], '要確認', ['R3', 'R5'], [], ['toel'], { sortKey: [3, 0, 0] }));
+    else rows.push(mk('③④', p.name, newP, [], '要確認', ['R2', 'R5'], [], ['quoline', 'cosme', 'utet'], { sortKey: [2, 0, 0] }));
+  });
+
+  // 同じ旧商品が2つ以上の新の候補になっていれば R1（①②のみ）
+  const useCount = new Map();
+  rows.filter(r => r.system === '①' || r.system === '②').forEach(r => r.olds.forEach(o => useCount.set(o.id, (useCount.get(o.id) || 0) + 1)));
+  rows.forEach(r => {
+    if ((r.system === '①' || r.system === '②') && r.olds.some(o => useCount.get(o.id) > 1)) {
+      if (!r.reasons.includes('R1')) r.reasons.push('R1');
+      r.judge = '要確認';
+    }
+  });
+
+  // rowId の重複には #2 を付ける
+  const idCount = new Map();
+  rows.forEach(r => {
+    const n = (idCount.get(r.rowId) || 0) + 1;
+    idCount.set(r.rowId, n);
+    if (n > 1) r.rowId += `#${n}`;
+  });
+
+  const cmp = (a, b) => a.sortKey[0] - b.sortKey[0] || a.sortKey[1] - b.sortKey[1] || a.sortKey[2] - b.sortKey[2] || a.rowId.localeCompare(b.rowId, 'ja');
+  const certain = rows.filter(r => r.judge === '確実').sort(cmp);
+  const pending = rows.filter(r => r.judge !== '確実').sort(cmp);
+
+  // 旧のみ（旧の商品で、どの行にも入っていないもの）
+  const usedOld = new Set();
+  rows.forEach(r => r.olds.forEach(o => usedOld.add(o.id)));
+  const lastMsById = new Map();
+  orderHistory.forEach(h => {
+    const t = new Date(h.date).getTime();
+    if (Number.isFinite(t) && (!lastMsById.has(h.productId) || t > lastMsById.get(h.productId))) lastMsById.set(h.productId, t);
+  });
+  const yearAgo = now.getTime() - 365 * 86400000;
+  const quolineList = tokyoP.filter(p => MAPPING_QUOLINE_PATTERN.test(p.name)).map(oldRef);
+  const quolineIds = new Set(quolineList.map(o => o.id));
+  const oldOnly = oldP
+    .filter(p => !usedOld.has(p.id) && (p.active !== false || (lastMsById.get(p.id) || 0) >= yearAgo))
+    .map(p => {
+      const r = resolved.get(p.id);
+      const inQuoline = quolineIds.has(p.id);
+      const isCc = getFujishinCc(p.name) !== null;
+      const unresolved = !inQuoline && !isCc && r.status !== 'ok';
+      const reasons = ['R4'];
+      let hint = '';
+      if (unresolved) { reasons.push('R9'); hint = r.status === 'nolevel' ? `系統は「${MAPPING_FAMILY_LABEL[r.family]}」と読めるが明度なし` : (r.status === 'ambiguous' ? '複数の系統に当たる・明度が食い違う' : 'どの系統にも当たらない'); }
+      else if (inQuoline) hint = '③④の旧の一覧（殿が選ぶ）';
+      else if (r.status === 'ok') hint = `${MAPPING_FAMILY_LABEL[r.family]}${r.level === null ? '' : r.level}に対応するトエルがありません`;
+      return {
+        rowId: `旧-${tokyoIds.has(p.vendorId) ? '東京' : 'フジ'}-${p.name}`, system: '旧のみ', old: oldRef(p),
+        reasons, hint, unresolved, family: r.family, level: r.level,
+        oldStats: mappingHistoryStats([p.id], orderHistory, now),
+      };
+    });
+  const oc = new Map();
+  oldOnly.forEach(r => { const n = (oc.get(r.rowId) || 0) + 1; oc.set(r.rowId, n); if (n > 1) r.rowId += `#${n}`; });
+  oldOnly.sort((a, b) => (b.unresolved ? 1 : 0) - (a.unresolved ? 1 : 0) || a.rowId.localeCompare(b.rowId, 'ja'));
+
+  return {
+    certain, pending, oldOnly, quolineList,
+    counts: { certain: certain.length, pending: pending.length, oldOnly: oldOnly.length, unresolved: oldOnly.filter(r => r.unresolved).length },
+  };
+}
+// MAPPING-PURE-END
+
+// 描画（HTML 文字列を作って #mappingBody に入れるだけ。DATA は読むだけで書かない）
+function mappingStatsText(oldStats, newStats) {
+  const o = oldStats || { lastDate: null, count: 0, qty: 0 };
+  const n = newStats;
+  let t = `旧 最終発注 ${o.lastDate || 'なし'}・${MAPPING_WINDOW_DAYS}日で ${o.qty}個（${o.count}回）`;
+  if (n) t += `｜新 ${MAPPING_WINDOW_DAYS}日で ${n.qty}個（${n.count}回）`;
+  return t;
+}
+
+function mappingSourceLinks(keys) {
+  return (keys || []).map(k => MAPPING_SOURCES[k]).filter(Boolean)
+    .map(s => `<a href="${esc(s.url)}" target="_blank" rel="noopener" style="color:var(--accent-light);">${esc(s.label)}</a>`).join('・');
+}
+
+function mappingCardHtml(r) {
+  const judgeColor = r.judge === '確実' ? 'var(--success)' : 'var(--warning)';
+  const oldText = r.olds.length
+    ? '← 旧（' + r.olds.length + '商品）' + r.olds.map(o => `<div style="margin:2px 0 0 8px;">・${esc(o.name)}（${esc(o.vendorName)}）${o.active ? '' : '（非表示）'}<span style="color:var(--text-sub);font-size:12px;">　${esc(mappingStatsText(o.stats, null))}</span></div>`).join('')
+    : '← 旧: なし';
+  const totalLine = r.olds.length
+    ? `<div style="margin-top:4px;font-weight:700;">合計（旧${r.olds.length}商品の合計＋トエル自身）: ${MAPPING_WINDOW_DAYS}日で ${r.totalStats.qty}個（月 ${Math.round(r.totalMonthly * 10) / 10}個）</div>`
+    : '';
+  const reasons = r.reasons.map(c => esc(MAPPING_REASON_TEXT[c] || c)).join('／');
+  const basis = r.basis ? ` 根拠: ${esc(r.basis)}` : '';
+  const notes = (r.notes || []).map(n => `<div style="font-size:11px;color:var(--text-sub);margin-top:2px;">注記: ${esc(n)}</div>`).join('');
+  return `<div style="background:var(--surface2);border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
+    <div><span style="display:inline-block;background:rgba(108,99,255,0.25);border-radius:8px;padding:1px 8px;font-size:12px;margin-right:6px;">${esc(r.rowId)}</span>${r.newP.id ? productNameHtml(r.newP.name) : esc(r.newP.name)}（${esc(r.newP.vendorName)}）</div>
+    <div style="margin-top:4px;">${oldText}</div>
+    <div style="margin-top:4px;color:var(--text-sub);">${esc(mappingStatsText(r.oldStats, r.newP.id ? r.newStats : null))}（旧は全商品の合計）</div>
+    ${totalLine}
+    <div style="margin-top:4px;"><span style="color:${judgeColor};font-weight:700;">${esc(r.judge)}</span>${reasons ? '：' + reasons : ''}${basis}</div>
+    ${notes}
+    <div style="margin-top:4px;font-size:12px;">出典: ${mappingSourceLinks(r.sourceKeys)}</div>
+  </div>`;
+}
+
+function mappingOldOnlyHtml(r) {
+  const reasons = r.reasons.map(c => esc(MAPPING_REASON_TEXT[c] || c)).join('／');
+  return `<div style="background:var(--surface2);border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
+    <div><span style="display:inline-block;background:rgba(108,99,255,0.25);border-radius:8px;padding:1px 8px;font-size:12px;margin-right:6px;">${esc(r.rowId)}</span>${esc(r.old.name)}（${esc(r.old.vendorName)}）${r.old.active ? '' : '（非表示）'}</div>
+    <div style="margin-top:4px;color:var(--text-sub);">${esc(mappingStatsText(r.oldStats, null))}</div>
+    <div style="margin-top:4px;"><span style="color:var(--warning);font-weight:700;">要確認</span>：${reasons}${r.hint ? '（' + esc(r.hint) + '）' : ''}</div>
+  </div>`;
+}
+
+const MAPPING_SYSTEM_NOTES = {
+  '①': '旧（東京理美容商会のカラー）→ トエル ファッション。殿ご教示（2026-11-22）の対応を、カタカナ表記・アルファベット表記の両方で拾っています。旧はアジアンカラーフェスと伺っていますが、アプリの旧商品名にブランド名は入っていません。',
+  '②': '旧（フジシンの cc）→ トエル 白髪染め。殿は「ナンバースリー」とおっしゃっていましたが、コードはフジシン／東京理美容商会の cc 表記で照合しています。',
+  '③④': 'ラボラボのウトエト。旧（アリミノ）と新（ナプラ）はメーカーが違い、置き換え表がないため、候補は出していません。殿がお選びください。',
+  '他': '対応する旧が見つからない新商品（Be・e: 系、ナシード等）。',
+};
+
+function renderMappingModal() {
+  const body = document.getElementById('mappingBody');
+  if (!body) return;
+  const t = buildMappingTable(DATA.products, DATA.vendors, DATA.orderHistory, new Date());
+  const ask = '違う行・分からない行の番号だけ将軍にお知らせください（例: ①-M/8 は違う）。お知らせがなければ「確実」はすべて OK と見なします。';
+  let html = `<div style="font-size:12px;color:var(--text-sub);margin-bottom:8px;">この画面では何も変わりません（見るだけ）。</div>
+    <div style="font-size:14px;font-weight:700;margin-bottom:6px;">確実 ${t.counts.certain}件／要確認 ${t.counts.pending}件／旧のみ ${t.counts.oldOnly}件</div>
+    <div style="font-size:13px;color:${t.counts.unresolved ? 'var(--warning)' : 'var(--text-sub)'};margin-bottom:6px;">どの系統にも解決できなかった旧商品: ${t.counts.unresolved}件（下の「旧のみ」に出しています）</div>
+    <div style="font-size:12px;color:var(--text-sub);margin-bottom:12px;">${esc(ask)}</div>`;
+
+  html += `<h3 style="font-size:15px;margin:12px 0 6px;color:var(--success);">確実（${t.counts.certain}件）</h3>`;
+  MAPPING_SYSTEM_ORDER.forEach(sys => {
+    const list = t.certain.filter(r => r.system === sys);
+    if (!list.length) return;
+    html += `<div style="font-size:12px;color:var(--text-sub);margin:8px 0 4px;">${esc(sys)} ${esc(MAPPING_SYSTEM_NOTES[sys] || '')}</div>` + list.map(mappingCardHtml).join('');
+  });
+  if (!t.certain.length) html += '<div style="font-size:12px;color:var(--text-sub);">なし</div>';
+
+  html += `<h3 style="font-size:15px;margin:16px 0 6px;color:var(--warning);">要確認（${t.counts.pending}件）</h3>`;
+  MAPPING_SYSTEM_ORDER.forEach(sys => {
+    const list = t.pending.filter(r => r.system === sys);
+    if (!list.length && !(sys === '③④' && t.quolineList.length)) return;
+    html += `<div style="font-size:12px;color:var(--text-sub);margin:8px 0 4px;">${esc(sys)} ${esc(MAPPING_SYSTEM_NOTES[sys] || '')}</div>`;
+    if (sys === '③④' && t.quolineList.length) {
+      html += `<div style="background:var(--surface2);border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:13px;"><div style="font-weight:700;margin-bottom:4px;">旧の一覧（クオライン・コスメ等）</div><div>${t.quolineList.map(o => esc(o.name) + (o.active ? '' : '（非表示）')).join('／')}</div><div style="margin-top:4px;font-size:12px;">出典: ${mappingSourceLinks(['quoline', 'cosme'])}</div></div>`;
+    }
+    html += list.map(mappingCardHtml).join('');
+  });
+
+  html += `<h3 style="font-size:15px;margin:16px 0 6px;color:var(--warning);">旧のみ・新の候補なし（${t.counts.oldOnly}件）</h3>`
+    + (t.oldOnly.length ? t.oldOnly.map(mappingOldOnlyHtml).join('') : '<div style="font-size:12px;color:var(--text-sub);">なし</div>');
+  html += `<div style="font-size:12px;color:var(--text-sub);margin-top:12px;">${esc(ask)}</div>`;
+  body.innerHTML = html;
+}
+
+function openMappingModal() {
+  renderMappingModal();
+  document.getElementById('modal-mapping').classList.add('show');
+}
+
+function closeMappingModal() {
+  document.getElementById('modal-mapping').classList.remove('show');
+  try {
+    if (location.hash === '#mapping') history.replaceState(null, '', location.pathname + location.search);
+  } catch (e) { /* 無視 */ }
+}
+
+function maybeOpenMappingFromHash() {
+  if (location.hash === '#mapping' && currentUser) openMappingModal();
+}
+window.addEventListener('hashchange', maybeOpenMappingFromHash);
+
 async function seedBlankToelReferenceValues() {
   if (!sbClient) return 0;
   const pending = [];
@@ -3735,6 +4104,8 @@ function openModal(name) {
 function closeModal(name) {
   document.getElementById('modal-' + name).classList.remove('show');
 }
+
+document.getElementById('modal-mapping').addEventListener('click', e => { if (e.target.id === 'modal-mapping') closeMappingModal(); });
 
 // Close modal on overlay click
 document.querySelectorAll('.modal-overlay').forEach(overlay => {
