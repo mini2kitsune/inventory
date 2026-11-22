@@ -545,6 +545,17 @@
       <label class="form-label">季節調整係数（通常は1.0）</label>
       <input class="form-input" id="editSeasonal" type="number" min="0" step="0.1" value="1">
     </div>
+    <div class="form-group" id="editPredGroup">
+      <label class="form-label">後継元の商材（旧商材・複数可）</label>
+      <div id="editPredChips" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
+      <div id="editPredNote" style="font-size:12px;color:var(--text-sub);margin-top:4px;"></div>
+      <button id="editPredAddBtn" onclick="toggleEditPredPicker()" style="margin-top:6px;padding:8px 12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--accent-light);font-size:13px;font-weight:600;cursor:pointer;">＋ 追加</button>
+      <div id="editPredPicker" style="display:none;margin-top:8px;gap:8px;flex-direction:column;">
+        <select class="form-input" id="editPredVendor" onchange="renderEditPredProductOptions()"></select>
+        <select class="form-input" id="editPredProduct"></select>
+        <button onclick="addEditPred()" style="padding:8px 12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--accent-light);font-size:13px;font-weight:600;cursor:pointer;">この商材を後継元にする</button>
+      </div>
+    </div>
     <button class="action-btn" onclick="saveProductEdit()" style="margin-top:8px">保存</button>
     <button onclick="duplicateProduct()" style="width:100%;margin-top:12px;padding:12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:12px;color:var(--accent-light);font-size:14px;font-weight:600;cursor:pointer;">複製して追加</button>
     <button onclick="deleteProduct()" style="width:100%;margin-top:12px;padding:12px;background:none;border:1.5px solid var(--danger);border-radius:12px;color:var(--danger);font-size:14px;font-weight:600;cursor:pointer;">この商品を削除</button>
@@ -858,6 +869,38 @@ function saveSyncQueue(q) {
   localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(q));
 }
 
+// ---- 後継元リンク（旧商材→新商材）メタ。products.importance 列(text, 未使用)を流用して JSON を保存する ----
+// 列名と中身が合わないが、スキーマ変更なしで運用するための暫定措置。将来 predecessor_ids 列へ移行可能。
+const DEMAND_META_COLUMN = 'importance'; // 列名は流用。中身は後継元リンクの JSON: {"_demand":1,"pred":[id,...],"lock":{"min":bool,"monthly":bool}}
+function emptyDemandMeta() { return { pred: [], lock: { min: false, monthly: false }, foreign: false }; }
+// raw: DB の importance 値。_demand:1 の目印が無い値は「よそのデータ」として foreign:true とし、読まず・書かない。
+function parseDemandMeta(raw) {
+  const meta = emptyDemandMeta();
+  if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) return meta;
+  let obj = null;
+  try { obj = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { obj = null; }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj) || obj._demand !== 1) { meta.foreign = true; return meta; }
+  if (Array.isArray(obj.pred)) {
+    obj.pred.forEach(x => { if (typeof x === 'string' && x && !meta.pred.includes(x)) meta.pred.push(x); });
+  }
+  if (obj.lock && typeof obj.lock === 'object') {
+    meta.lock.min = obj.lock.min === true;
+    meta.lock.monthly = obj.lock.monthly === true;
+  }
+  return meta;
+}
+// 戻り値: JSON 文字列。中身が空（pred なし・lock なし）なら null（importance を NULL に戻す）。foreign は書いてはならない（呼び出し側で判定）。
+function serializeDemandMeta(meta) {
+  const pred = (meta && Array.isArray(meta.pred)) ? meta.pred.filter((x, i, a) => typeof x === 'string' && x && a.indexOf(x) === i) : [];
+  const lock = { min: !!(meta && meta.lock && meta.lock.min), monthly: !!(meta && meta.lock && meta.lock.monthly) };
+  if (pred.length === 0 && !lock.min && !lock.monthly) return null;
+  return JSON.stringify({ _demand: 1, pred, lock });
+}
+function hasDemandLinkOrLock(product) {
+  const m = product && product.demandMeta;
+  return !!(m && !m.foreign && (m.pred.length > 0 || m.lock.min || m.lock.monthly));
+}
+
 function enqueueSync(op) {
   const q = getSyncQueue();
   q.push(op);
@@ -909,6 +952,12 @@ async function processSyncQueue() {
             sbClient.from('inventory').update({ ideal_stock: op.minStock, monthly_consumption: op.monthly, seasonal_factor: op.seasonal }).eq('product_id', rid).eq('tenant_id', TENANT_ID),
           ]);
           ok = !r1.error && !r2.error;
+          break;
+        }
+        case 'save_demand_meta': {
+          const rid = idMap[op.id] || op.id;
+          const { error } = await sbClient.from('products').update({ [DEMAND_META_COLUMN]: op.meta ?? null }).eq('id', rid).eq('tenant_id', TENANT_ID);
+          ok = !error;
           break;
         }
         case 'add_product': {
@@ -1340,6 +1389,7 @@ async function loadDataFromSupabase() {
         price: p.price || 0,
         monthlyConsumption: parseFloat(inv.monthly_consumption || 0),
         seasonalFactor: parseFloat(inv.seasonal_factor || 1),
+        demandMeta: parseDemandMeta(p[DEMAND_META_COLUMN]),
       };
     });
 
@@ -1383,6 +1433,10 @@ async function loadDataFromSupabase() {
         if (local && !DATA.orderHistory.some(h => h.id === local.id || h.id === op.remoteId)) DATA.orderHistory.push(local);
       } else if (op.type === 'update_history_dates') {
         DATA.orderHistory.forEach(h => { if (op.ids.includes(h.id)) h.date = op.orderDate; });
+      } else if (op.type === 'save_demand_meta') {
+        // 未送信の後継元リンクはサーバー読込の後に端末側の値をかぶせ直す
+        const lp = DATA.products.find(p => p.id === op.id);
+        if (lp && !lp.demandMeta.foreign) lp.demandMeta = parseDemandMeta(op.meta);
       }
     }
 
@@ -2240,6 +2294,7 @@ async function duplicateProduct() {
     id: newId,
     name: src.name + '（コピー）',
     sortOrder: (src.sortOrder || 0) + 5,
+    demandMeta: emptyDemandMeta(), // 後継元リンク・手動固定は複製しない
   };
   DATA.products.push(newProduct);
   saveData(DATA);
@@ -2687,6 +2742,7 @@ async function seedBlankToelReferenceValues() {
   const pending = [];
   DATA.products.forEach(product => {
     if (DATA.vendors.find(v => v.id === product.vendorId)?.name !== 'ミツイ' || !isToelProduct(product)) return;
+    if (hasDemandLinkOrLock(product)) return; // 後継元リンクまたは手動固定がある商品は自動上書きしない
     const reference = getOldVendorReference(product);
     if (reference?.status === 'mapping-missing' || reference?.status === 'vendor-missing') return;
     const monthly = reference?.status === 'ok' && Number.isFinite(reference.monthlyPerProduct)
@@ -2727,6 +2783,90 @@ async function seedBlankToelReferenceValues() {
   return applied;
 }
 
+// ---- 後継元リンク編集（商品モーダル） ----
+let _editDemandMeta = null;   // モーダル内の作業用コピー
+let _editInitial = null;      // モーダルを開いた時点の値（殿が変えた項目だけ lock するための比較用）
+
+function wouldCreatePredCycle(selfId, candidateId) {
+  // candidate の系譜（pred をたどる）に self が含まれるなら、逆向き（循環）になるので選べない
+  const seen = new Set();
+  const stack = [candidateId];
+  let depth = 0;
+  while (stack.length && depth < 20) {
+    const cur = stack.pop();
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    if (cur === selfId) return true;
+    const cp = DATA.products.find(x => x.id === cur);
+    if (cp && cp.demandMeta && !cp.demandMeta.foreign) cp.demandMeta.pred.forEach(x => stack.push(x));
+    depth++;
+  }
+  return false;
+}
+
+function renderEditPredChips() {
+  const box = document.getElementById('editPredChips');
+  const note = document.getElementById('editPredNote');
+  const addBtn = document.getElementById('editPredAddBtn');
+  const picker = document.getElementById('editPredPicker');
+  if (!_editDemandMeta) return;
+  if (_editDemandMeta.foreign) {
+    box.innerHTML = '';
+    note.textContent = 'この商品は後継元を設定できません';
+    addBtn.style.display = 'none';
+    picker.style.display = 'none';
+    return;
+  }
+  addBtn.style.display = '';
+  note.textContent = _editDemandMeta.pred.length ? '' : '設定なし（旧商材の履歴を引き継ぐ場合に追加）';
+  box.innerHTML = _editDemandMeta.pred.map((pid, i) => {
+    const pp = DATA.products.find(x => x.id === pid);
+    const vn = pp ? (DATA.vendors.find(v => v.id === pp.vendorId)?.name || '') : '';
+    const label = pp ? `${vn ? vn + ' / ' : ''}${pp.name}${pp.active === false ? '（非表示）' : ''}` : '（見つかりません）';
+    return `<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:14px;font-size:12px;">${esc(label)}<button onclick="removeEditPred(${i})" style="background:none;border:none;color:var(--danger);font-size:16px;line-height:1;cursor:pointer;padding:0;">&times;</button></span>`;
+  }).join('');
+}
+
+function toggleEditPredPicker() {
+  const picker = document.getElementById('editPredPicker');
+  const open = picker.style.display === 'none';
+  picker.style.display = open ? 'flex' : 'none';
+  if (open) {
+    const sel = document.getElementById('editPredVendor');
+    sel.innerHTML = DATA.vendors.map(v => `<option value="${esc(v.id)}">${esc(v.name)}${v.isActive === false ? '（非表示）' : ''}</option>`).join('');
+    renderEditPredProductOptions();
+  }
+}
+
+function renderEditPredProductOptions() {
+  const selfId = document.getElementById('editProductId').value;
+  const vid = document.getElementById('editPredVendor').value;
+  const sel = document.getElementById('editPredProduct');
+  const cands = DATA.products
+    .filter(x => x.vendorId === vid && x.id !== selfId && !(_editDemandMeta && _editDemandMeta.pred.includes(x.id)) && !wouldCreatePredCycle(selfId, x.id))
+    .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+  sel.innerHTML = cands.length
+    ? cands.map(x => `<option value="${esc(x.id)}">${esc(x.name)}${x.active === false ? '（非表示）' : ''}</option>`).join('')
+    : '<option value="">（選べる商品がありません）</option>';
+}
+
+function addEditPred() {
+  const selfId = document.getElementById('editProductId').value;
+  const pid = document.getElementById('editPredProduct').value;
+  if (!pid || !_editDemandMeta || _editDemandMeta.foreign) return;
+  if (pid === selfId || _editDemandMeta.pred.includes(pid) || wouldCreatePredCycle(selfId, pid)) return;
+  _editDemandMeta.pred.push(pid);
+  renderEditPredChips();
+  renderEditPredProductOptions();
+}
+
+function removeEditPred(i) {
+  if (!_editDemandMeta || _editDemandMeta.foreign) return;
+  _editDemandMeta.pred.splice(i, 1);
+  renderEditPredChips();
+  renderEditPredProductOptions();
+}
+
 function openProductEdit(id) {
   const p = DATA.products.find(x => x.id === id);
   if (!p) return;
@@ -2736,6 +2876,12 @@ function openProductEdit(id) {
   document.getElementById('editPrice').value = p.price || 0;
   document.getElementById('editMonthly').value = p.monthlyConsumption || 0;
   document.getElementById('editSeasonal').value = p.seasonalFactor || 1;
+
+  const dm = p.demandMeta || emptyDemandMeta();
+  _editDemandMeta = { pred: dm.pred.slice(), lock: { min: dm.lock.min, monthly: dm.lock.monthly }, foreign: dm.foreign };
+  _editInitial = { minStock: parseInt(document.getElementById('editMinStock').value) || 0, monthly: parseFloat(document.getElementById('editMonthly').value) || 0 };
+  document.getElementById('editPredPicker').style.display = 'none';
+  renderEditPredChips();
 
   const refStat = document.getElementById('editVendorReferenceStat');
   const refBtn = document.getElementById('useVendorReferenceBtn');
@@ -2812,16 +2958,35 @@ async function saveProductEdit() {
   const monthly = parseFloat(document.getElementById('editMonthly').value) || 0;
   const seasonal = parseFloat(document.getElementById('editSeasonal').value) || 1;
 
+  // 後継元リンク・手動固定(lock)の差分判定。殿がモーダルで変えた項目だけ lock=true にする。
+  // lock は「後継元あり」または「ミツイのトエル」の商品だけに付ける（それ以外の商品の importance は触らない）。
+  if (!p.demandMeta) p.demandMeta = emptyDemandMeta(); // 旧キャッシュ・端末内で新規追加した商品用
+  let newDemandMeta = null;   // 変更があるときだけ入る
+  if (_editDemandMeta && !_editDemandMeta.foreign && p.demandMeta && !p.demandMeta.foreign && _editInitial) {
+    const nm = { pred: _editDemandMeta.pred.slice(), lock: { min: _editDemandMeta.lock.min, monthly: _editDemandMeta.lock.monthly }, foreign: false };
+    const lockable = nm.pred.length > 0
+      || (DATA.vendors.find(v => v.id === p.vendorId)?.name === 'ミツイ' && isToelProduct(p));
+    if (lockable) {
+      if (minStock !== _editInitial.minStock) nm.lock.min = true;
+      if (monthly !== _editInitial.monthly) nm.lock.monthly = true;
+    }
+    if (serializeDemandMeta(nm) !== serializeDemandMeta(p.demandMeta)) newDemandMeta = nm;
+  }
+
   p.minStock = minStock;
   p.price = price;
   p.monthlyConsumption = monthly;
   p.seasonalFactor = seasonal;
+  if (newDemandMeta) p.demandMeta = newDemandMeta;
   saveData(DATA);
   closeModal('editProduct');
   render();
 
+  const demandJson = newDemandMeta ? serializeDemandMeta(newDemandMeta) : null;
+
   if (!sbClient || !isOnline) {
     enqueueSync({ type: 'save_product_edit', id, minStock, price, monthly, seasonal });
+    if (newDemandMeta) enqueueSync({ type: 'save_demand_meta', id, meta: demandJson });
     showToast('保存しました');
     return;
   }
@@ -2831,12 +2996,17 @@ async function saveProductEdit() {
       sbClient.from('products').update({ price }).eq('id', id).eq('tenant_id', TENANT_ID),
       sbClient.from('inventory').update({ ideal_stock: minStock, monthly_consumption: monthly, seasonal_factor: seasonal }).eq('product_id', id).eq('tenant_id', TENANT_ID),
     ]);
+    if (newDemandMeta) {
+      const { error: dErr } = await sbClient.from('products').update({ [DEMAND_META_COLUMN]: demandJson }).eq('id', id).eq('tenant_id', TENANT_ID);
+      if (dErr) throw dErr;
+    }
     showToast('保存しました');
     lastSyncTime = new Date();
     updateSyncDisplay();
   } catch(e) {
     console.error('saveProductEdit失敗:', e);
     enqueueSync({ type: 'save_product_edit', id, minStock, price, monthly, seasonal });
+    if (newDemandMeta) enqueueSync({ type: 'save_demand_meta', id, meta: demandJson });
     showToast('⚠ サーバー保存に失敗（端末には保存済み）');
   }
 }
