@@ -2825,13 +2825,38 @@ function mappingResolveOldName(name) {
   return { family, level, status: 'ok' };
 }
 
+// 東京→フジシンの複製（copyTokyoRangeToFujishin）で増えた履歴の二重計上を除く。
+// 東京理美容／フジシンの商品の行だけを、組キー 商品名（そのまま）|時刻|数量|在庫 でまとめ、商品IDごとの行数の最大ぶんだけ残す。
+// それ以外（名前が違う・ほかの仕入先・トエル自身）は全部残す。
+function dedupeCopyPairRows(orderHistory, products, vendors) {
+  const vOk = new Map((vendors || []).map(v => [v.id, String(v.name || '').includes('東京理美容') || String(v.name || '').includes('フジシン')]));
+  const pMap = new Map((products || []).map(p => [p.id, p]));
+  const groups = new Map();
+  const out = [];
+  (orderHistory || []).forEach(h => {
+    const p = pMap.get(h.productId);
+    const t = new Date(h.date).getTime();
+    if (!p || !vOk.get(p.vendorId) || !Number.isFinite(t)) { out.push(h); return; }
+    const key = `${p.name}|${t}|${Number(h.quantity) || 0}|${Number(h.stockAtOrder) || 0}`;
+    let g = groups.get(key);
+    if (!g) { g = { rows: [], counts: new Map() }; groups.set(key, g); }
+    g.rows.push(h);
+    g.counts.set(h.productId, (g.counts.get(h.productId) || 0) + 1);
+  });
+  groups.forEach(g => {
+    const max = Math.max(...g.counts.values());
+    const keep = [...g.counts.entries()].find(([, c]) => c === max)[0];
+    g.rows.filter(h => h.productId === keep).forEach(h => out.push(h));
+  });
+  return out;
+}
+
 // productIds の履歴を『合計』で集計（1トエル色＝対応する旧商品すべての合計＋トエル自身。月数の分母は全商品を通した1つの窓）。
 // lastDate は窓に関係なく最新の発注日、count/qty は now-180日〜now。
 function mappingHistoryStats(productIds, orderHistory, now) {
   const ids = new Set(productIds || []);
   const nowMs = now.getTime();
   const fromMs = nowMs - MAPPING_WINDOW_DAYS * 86400000;
-  const seen = new Set();
   const days = new Set();
   let lastMs = null;
   let qty = 0;
@@ -2839,10 +2864,7 @@ function mappingHistoryStats(productIds, orderHistory, now) {
     if (!ids.has(h.productId)) return;
     const t = new Date(h.date).getTime();
     if (!Number.isFinite(t)) return;
-    // 殿ご指示（2026-11-22）: 薬剤違いの旧商品は同日・同数量でも別の発注。商品IDが違えば重複排除しない（同じ商品の完全に同じ行だけ1件）。
-    const key = `${h.productId}|${h.date}|${Number(h.quantity) || 0}|${Number(h.stockAtOrder) || 0}`;
-    if (seen.has(key)) return;
-    seen.add(key);
+    // 重複の扱いは dedupeCopyPairRows（東京↔フジシンの複製）だけ。ここでは同じ行も全部数える。
     if (lastMs === null || t > lastMs) lastMs = t;
     if (t >= fromMs && t <= nowMs) {
       qty += Number(h.quantity) || 0;
@@ -2853,7 +2875,8 @@ function mappingHistoryStats(productIds, orderHistory, now) {
 }
 
 function buildMappingTable(products, vendors, orderHistory, now) {
-  products = products || []; vendors = vendors || []; orderHistory = orderHistory || [];
+  products = products || []; vendors = vendors || [];
+  orderHistory = dedupeCopyPairRows(orderHistory || [], products, vendors);
   const vname = id => vendors.find(v => v.id === id)?.name || '';
   const idsOf = pred => new Set(vendors.filter(pred).map(v => v.id));
   const tokyoIds = idsOf(v => String(v.name).includes('東京理美容'));
@@ -3022,7 +3045,7 @@ function mappingCardHtml(r) {
     ? '← 旧（' + r.olds.length + '商品）' + r.olds.map(o => `<div style="margin:2px 0 0 8px;">・${esc(o.name)}（${esc(o.vendorName)}）${o.active ? '' : '（非表示）'}<span style="color:var(--text-sub);font-size:12px;">　${esc(mappingStatsText(o.stats, null))}</span></div>`).join('')
     : '← 旧: なし';
   const totalLine = r.olds.length
-    ? `<div style="margin-top:4px;font-weight:700;">合計（旧${r.olds.length}商品の合計＋トエル自身）: ${MAPPING_WINDOW_DAYS}日で ${r.totalStats.qty}個（月 ${Math.round(r.totalMonthly * 10) / 10}個）</div>`
+    ? `<div style="margin-top:4px;font-weight:700;">合計（旧${r.olds.length}商品の合計＋トエル自身）: ${MAPPING_WINDOW_DAYS}日で ${r.totalStats.qty}個 ／（参考）180日の合計÷6: 月 ${Math.round(r.totalMonthly * 10) / 10}個</div>`
     : '';
   const reasons = r.reasons.map(c => esc(MAPPING_REASON_TEXT[c] || c)).join('／');
   const basis = r.basis ? ` 根拠: ${esc(r.basis)}` : '';
