@@ -2745,6 +2745,8 @@ async function seedBlankToelReferenceValues() {
     if (hasDemandLinkOrLock(product)) return; // 後継元リンクまたは手動固定がある商品は自動上書きしない
     const reference = getOldVendorReference(product);
     if (reference?.status === 'mapping-missing' || reference?.status === 'vendor-missing') return;
+    // 旧履歴が6か月窓から外れても 0 に書き換えない（殿承認 2026-11-22 Q5）
+    if (reference?.status === 'history-missing' || reference?.status === 'products-missing') return;
     const monthly = reference?.status === 'ok' && Number.isFinite(reference.monthlyPerProduct)
       ? Number(reference.monthlyPerProduct.toFixed(1)) : 0;
     const minStock = monthly > 0 ? Math.max(1, Math.ceil(monthly)) : 0;
