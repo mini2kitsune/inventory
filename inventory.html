@@ -2985,28 +2985,29 @@ async function saveProductEdit() {
   const demandJson = newDemandMeta ? serializeDemandMeta(newDemandMeta) : null;
 
   if (!sbClient || !isOnline) {
-    enqueueSync({ type: 'save_product_edit', id, minStock, price, monthly, seasonal });
     if (newDemandMeta) enqueueSync({ type: 'save_demand_meta', id, meta: demandJson });
+    enqueueSync({ type: 'save_product_edit', id, minStock, price, monthly, seasonal });
     showToast('保存しました');
     return;
   }
 
   try {
-    await Promise.all([
-      sbClient.from('products').update({ price }).eq('id', id).eq('tenant_id', TENANT_ID),
-      sbClient.from('inventory').update({ ideal_stock: minStock, monthly_consumption: monthly, seasonal_factor: seasonal }).eq('product_id', id).eq('tenant_id', TENANT_ID),
-    ]);
+    // lock(importance) を inventory 更新より先に送る（再読込時の参考値シードが殿の値を上書きしないように）
     if (newDemandMeta) {
       const { error: dErr } = await sbClient.from('products').update({ [DEMAND_META_COLUMN]: demandJson }).eq('id', id).eq('tenant_id', TENANT_ID);
       if (dErr) throw dErr;
     }
+    await Promise.all([
+      sbClient.from('products').update({ price }).eq('id', id).eq('tenant_id', TENANT_ID),
+      sbClient.from('inventory').update({ ideal_stock: minStock, monthly_consumption: monthly, seasonal_factor: seasonal }).eq('product_id', id).eq('tenant_id', TENANT_ID),
+    ]);
     showToast('保存しました');
     lastSyncTime = new Date();
     updateSyncDisplay();
   } catch(e) {
     console.error('saveProductEdit失敗:', e);
-    enqueueSync({ type: 'save_product_edit', id, minStock, price, monthly, seasonal });
     if (newDemandMeta) enqueueSync({ type: 'save_demand_meta', id, meta: demandJson });
+    enqueueSync({ type: 'save_product_edit', id, minStock, price, monthly, seasonal });
     showToast('⚠ サーバー保存に失敗（端末には保存済み）');
   }
 }
