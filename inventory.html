@@ -2790,6 +2790,8 @@ const MAPPING_REASON_TEXT = {
   R3: 'R3 対応する旧がない',
   R4: 'R4 対応する新がない',
   R5: 'R5 出典で関係を確かめられない',
+  R6: 'R6 店の対応表の旧の商品名を、アプリ内の商品から拾えない',
+  R7: 'R7 店の対応表の新の商品名を、アプリ内の商品から特定できない',
   R9: 'R9 商品名をどの系統にも解決できない（表記を拾えず）',
 };
 
@@ -2880,6 +2882,49 @@ function mappingHistoryStats(productIds, orderHistory, now) {
   return { lastDate: lastMs === null ? null : toJSTDateKey(new Date(lastMs)), count: days.size, qty };
 }
 
+// ---- ③④ ウトエト ← クオライン／コスメカール／アジャスト（殿提供・店の対応表。写真 docs/inventory_lineage_photo_20261122.png）----
+// newRe: 新（ラボラボ・ウトエト）の商品名（NFKC・大文字化後）に当てる。olds: 旧の商品名（同じ正規化後）に当てる。
+// 表記ゆれ（全角半角・スペース・『クオライン 130』『コスメV』『コスメカールV』）は正規化と \s* で吸収する。
+// judge を '要確認' に切り替えるだけで確実→要確認に戻せる。1つの新に複数の旧（C/H の V と EX）は既存の規則どおり合計する。
+const UTEET_LINEAGE_BASIS = '殿ご教示・店の対応表 2026-11-22（写真 docs/inventory_lineage_photo_20261122.png）';
+const UTEET_QUOLINE = n => ({ label: `クオライン${n}`, re: new RegExp('クオライン\\s*[\\/・.\\-]?\\s*' + n + '(?!\\d)') });
+const UTEET_COSME_CURL = (label, code) => ({ label, re: new RegExp('コスメ(?:カール)?\\s*' + code + '(?![A-Z0-9])') });
+const UTEET_LINEAGE_TABLE = [
+  { key: 'ストレートSH', newRe: /^ストレートSH(?![A-Z])/, olds: [UTEET_QUOLINE(280)], judge: '確実' },
+  { key: 'ストレートH', newRe: /^ストレートH(?![A-Z])/, olds: [UTEET_QUOLINE(250)], judge: '確実', note: '紙の表記は「クライン250」。殿ご回答（2026-11-22）でクオライン250の誤記と確定' },
+  { key: 'ストレートLA', newRe: /^ストレートLA(?![A-Z])/, olds: [UTEET_QUOLINE(80)], judge: '確実' },
+  { key: 'コスメC/H', newRe: /^コスメ\s*C\s*\/\s*H(?![A-Z])/, olds: [UTEET_QUOLINE(200)], judge: '確実' },
+  { key: 'コスメC/N', newRe: /^コスメ\s*C\s*\/\s*N(?![A-Z])/, olds: [UTEET_QUOLINE(130)], judge: '確実' },
+  { key: 'コスメC/LA', newRe: /^コスメ\s*C\s*\/\s*LA(?![A-Z])/, olds: [UTEET_QUOLINE(100)], judge: '確実' },
+  { key: 'コスメC/A', newRe: /^コスメ\s*C\s*\/\s*A(?![A-Z])/, olds: [UTEET_QUOLINE(110)], judge: '確実' },
+  { key: 'カールC/H', newRe: /^カール\s*C\s*\/\s*H(?![A-Z])/, olds: [UTEET_COSME_CURL('コスメカールV', 'V'), UTEET_COSME_CURL('コスメカールEX', 'EX')], judge: '確実',
+    note: '旧はコスメカールの V と EX の両方（合計で計算）。紙の注記: EX だと弱い・V だと強すぎるというサロン様の声が多く、間の強さで設計。殿ご回答（2026-11-22）で両方と確定' },
+  { key: 'カールC/N', newRe: /^カール\s*C\s*\/\s*N(?![A-Z])/, olds: [UTEET_COSME_CURL('コスメカールH', 'H')], judge: '確実', note: '殿ご回答（2026-11-22）でコスメカール H と確定' },
+  { key: 'ネントチューニングクリーム', newRe: /チューニング/, olds: [{ label: 'アジャスト0', re: /アジャスト\s*[\/・.\-]?\s*0(?!\d)/ }], judge: '確実',
+    note: 'アプリ内のウトエト12点にこの名前の商品はありません（クリームOX／BR2 と同じとは推測しません）' },
+];
+
+// 新の商品名 → 対応表の1行。旧は candidates（東京理美容の商品）から拾う。拾えないものは黙って落とさず R6／R7 で要確認にする。
+function mappingUteetEvaluate(entry, newFound, candidates) {
+  const hit = entry.olds.map(o => candidates.filter(c => o.re.test(normalizeReferenceName(c.name))));
+  const missing = entry.olds.filter((o, i) => !hit[i].length);
+  const seen = new Set();
+  const olds = [];
+  hit.forEach(list => list.forEach(c => { if (!seen.has(c.id)) { seen.add(c.id); olds.push(c); } }));
+  const reasons = [];
+  if (!newFound) reasons.push('R7');
+  if (missing.length) reasons.push('R6');
+  if (entry.judge !== '確実') reasons.push('R1');
+  const notes = [];
+  if (entry.note) notes.push(entry.note);
+  missing.forEach(o => notes.push(`店の対応表の旧「${o.label}」に当たる商品がアプリ内に見つかりません（表記を確かめてください）`));
+  return { olds, judge: reasons.length ? '要確認' : '確実', reasons, notes, basis: UTEET_LINEAGE_BASIS };
+}
+function mappingUteetLookup(newName) {
+  const n = normalizeReferenceName(newName);
+  return UTEET_LINEAGE_TABLE.find(e => e.newRe.test(n)) || null;
+}
+
 function buildMappingTable(products, vendors, orderHistory, now) {
   products = products || []; vendors = vendors || [];
   const rawHistoryLen = (orderHistory || []).length;
@@ -2959,7 +3004,22 @@ function buildMappingTable(products, vendors, orderHistory, now) {
   products.filter(p => laboIds.has(p.vendorId) && p.active !== false).forEach(p => {
     const newP = { id: p.id, name: p.name, vendorName: vname(p.vendorId) };
     if (String(p.name).includes('ナシード')) rows.push(mk('他', p.name, newP, [], '要確認', ['R3', 'R5'], [], ['toel'], { sortKey: [3, 0, 0] }));
-    else rows.push(mk('③④', p.name, newP, [], '要確認', ['R2', 'R5'], [], ['quoline', 'cosme', 'utet'], { sortKey: [2, 0, 0] }));
+    else {
+      const entry = mappingUteetLookup(p.name);
+      if (entry) {
+        const ev = mappingUteetEvaluate(entry, true, tokyoP);
+        rows.push(mk('③④', p.name, newP, ev.olds.map(oldRef), ev.judge, ev.reasons, ev.notes, ['quoline', 'cosme', 'utet'],
+          { sortKey: [2, UTEET_LINEAGE_TABLE.indexOf(entry), 0], basis: ev.basis }));
+      } else rows.push(mk('③④', p.name, newP, [], '要確認', ['R2', 'R5'], [], ['quoline', 'cosme', 'utet'], { sortKey: [2, 99, 0] }));
+    }
+  });
+  // 店の対応表にあるが、アプリ内の新側に商品が見つからない行（ネントチューニングクリーム等）は要確認で出す
+  UTEET_LINEAGE_TABLE.forEach((entry, i) => {
+    const found = products.some(p => laboIds.has(p.vendorId) && p.active !== false && entry.newRe.test(normalizeReferenceName(p.name)));
+    if (found) return;
+    const ev = mappingUteetEvaluate(entry, false, tokyoP);
+    rows.push(mk('③④', entry.key, { id: null, name: `${entry.key}（アプリ内に該当商品なし）`, vendorName: 'ラボラボ' }, ev.olds.map(oldRef), '要確認', ev.reasons, ev.notes, ['quoline', 'cosme', 'utet'],
+      { sortKey: [2, i, 0], basis: ev.basis }));
   });
 
   // 同じ旧商品が2つ以上の新の候補になっていれば R1（①②のみ）
@@ -3072,7 +3132,7 @@ function mappingOldOnlyHtml(r) {
 const MAPPING_SYSTEM_NOTES = {
   '①': '旧（東京理美容商会のカラー）→ トエル ファッション。殿ご教示（2026-11-22）の対応を、カタカナ表記・アルファベット表記の両方で拾っています。旧はアジアンカラーフェスと伺っていますが、アプリの旧商品名にブランド名は入っていません。',
   '②': '旧（フジシンの cc）→ トエル 白髪染め。殿は「ナンバースリー」とおっしゃっていましたが、コードはフジシン／東京理美容商会の cc 表記で照合しています。',
-  '③④': 'ラボラボのウトエト。旧（アリミノ）と新（ナプラ）はメーカーが違い、置き換え表がないため、候補は出していません。殿がお選びください。',
+  '③④': 'ラボラボのウトエト。旧（アリミノのクオライン・コスメカール・アジャスト）→ 新（ナプラ）。殿の店の対応表（写真・2026-11-22）をそのまま反映しています。表にない2剤（クリーム・ローション）は候補を出していません。',
   '他': '対応する旧が見つからない新商品（Be・e: 系、ナシード等）。',
 };
 
