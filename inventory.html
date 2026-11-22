@@ -2755,7 +2755,11 @@ const MAPPING_WINDOW_DAYS = 180; // 設計書 §2 と同じ窓
 const MAPPING_CERTAIN_FAMILIES = ['A', 'N', 'V', 'P', 'R', 'M', 'MT', 'LT', 'TE'];
 // トエル側 Te（テラコッタ）の色番の形。getToelProductCode の結果（大文字化済み）に当てる。
 // 例: TE/8・TE8・TE 8・テラコッタ8・TERRACOTTA/8 → 明度8。明度が無い・読めない名前は拾わず「その他（要確認）」に出す。
-// 明度の展開は推測しない（アプリ内に実在する Te 系商品の明度だけが旧オレンジの同じ明度と結ばれる）。
+// Te の明度は 12・10・8・6（殿ご教示 2026-11-22）。旧オレンジはこの4つに入れば同じ明度の Te へ結ぶ。入らない明度（14 等）は要確認。
+const TOEL_TE_LIGHTNESS = [12, 10, 8, 6];
+// 旧ナンバースリー NB4（表記ゆれ: NB4・NB-4・NB/4・ナンバースリー NB4）。殿に確認中: 旧NB4→トエルNB3 か。確認が取れるまで要確認（確実にしない）。
+const MAPPING_OLD_NB4_PATTERN = /(?:^|[^A-Z0-9])NB\s*[\/\-・.]?\s*4(?!\d)/;
+const MAPPING_NB3_CODE_PATTERN = /^NB\s*[\/\-・.]?\s*3$/;
 const TOEL_TE_CODE_PATTERN = /^(?:TE|テラコッタ|TERRACOTTA)\s*[\/・.\-]?\s*(\d+)?$/;
 // 旧（アジアンカラーフェス）側の色名（カタカナ）と記号（アルファベット）。どちらの表記も同じ系統に解決する。
 const MAPPING_OLD_FAMILIES = {
@@ -2792,6 +2796,7 @@ const MAPPING_REASON_TEXT = {
   R5: 'R5 出典で関係を確かめられない',
   R6: 'R6 店の対応表の旧の商品名を、アプリ内の商品から拾えない',
   R7: 'R7 店の対応表の新の商品名を、アプリ内の商品から特定できない',
+  R8: 'R8 殿に確認中（旧NB4→トエルNB3か）',
   R9: 'R9 商品名をどの系統にも解決できない（表記を拾えず）',
 };
 
@@ -2941,6 +2946,10 @@ function buildMappingTable(products, vendors, orderHistory, now) {
   const tokyoP = products.filter(p => tokyoIds.has(p.vendorId));
   const resolved = new Map(oldP.map(p => [p.id, mappingResolveOldName(p.name)]));
   const rows = [];
+  const nb4Olds = oldP.filter(o => MAPPING_OLD_NB4_PATTERN.test(normalizeReferenceName(o.name))).map(oldRef);
+  const nb4Notes = ['殿に確認中: 旧NB4→トエルNB3か（将軍の解釈。殿の回答があるまで確実にしません）'];
+  const nb4Basis = '殿ご教示「NB4はNB3」（意味を殿に確認中）';
+  let nb4Done = false;
   const mk = (system, rowKey, newP, olds, judge, reasons, notes, sourceKeys, extra) => {
     const oldsWithStats = olds.map(o => Object.assign({}, o, { stats: mappingHistoryStats([o.id], orderHistory, now) }));
     const oldStats = mappingHistoryStats(olds.map(o => o.id), orderHistory, now); // 旧すべての合計（1つの窓）
@@ -2963,7 +2972,12 @@ function buildMappingTable(products, vendors, orderHistory, now) {
       const sameName = new Set(cands.map(o => normalizeReferenceName(o.name))).size <= 1;
       const reasons = !cands.length ? ['R3'] : (sameName ? [] : ['R1']);
       rows.push(mk('②', code, newP, olds, reasons.length ? '要確認' : '確実', reasons, [], ['toel', 'numberthree'],
-        { sortKey: [1, Object.keys(toelReferenceSourceToTarget).indexOf(code), 0], basis: '既存の cc 対応（コード）' }));
+        { sortKey: [1, Object.keys(toelReferenceSourceToTarget).indexOf(code), 0], basis: '殿ご教示 2026-11-22（既存の対応表ロジックとも一致）: 6cc→NB5・8cc→NB7・10cc→brN11' }));
+      return;
+    }
+    if (nb4Olds.length && MAPPING_NB3_CODE_PATTERN.test(code)) { // 旧NB4→トエルNB3（殿に確認中）
+      rows.push(mk('②', code, newP, nb4Olds, '要確認', ['R8'], nb4Notes, ['toel', 'numberthree'], { sortKey: [1, 3, 0], basis: nb4Basis }));
+      nb4Done = true;
       return;
     }
     let family = null; let level = null;
@@ -2995,9 +3009,26 @@ function buildMappingTable(products, vendors, orderHistory, now) {
     });
     const lv = new Set(cands.map(o => resolved.get(o.id).level));
     const reasons = !cands.length ? ['R3'] : (lv.size > 1 ? ['R1'] : []);
-    const certain = !reasons.length && MAPPING_CERTAIN_FAMILIES.includes(family);
+    const teOutOfList = family === 'TE' && !TOEL_TE_LIGHTNESS.includes(level);
+    if (teOutOfList) notes.push(`明度${level === null ? 'なし' : level}は Te の明度（${TOEL_TE_LIGHTNESS.join('・')}）に入らないため要確認`);
+    const certain = !teOutOfList && !reasons.length && MAPPING_CERTAIN_FAMILIES.includes(family);
     rows.push(mk('①', code, newP, cands.map(oldRef), certain ? '確実' : '要確認', reasons, [...new Set(notes)], family === 'TE' ? ['toel', 'asian', 'te', 'asianOrange'] : ['toel', 'asian'],
       { family, level, sortKey: [0, MAPPING_FAMILY_ORDER.indexOf(family), -(level || 0)], basis: '殿ご教示 2026-11-22' }));
+  });
+
+  // 旧NB4 があるのにアプリ内にトエルNB3の商品名がない → 候補『トエル NB3』を示した要確認行
+  if (nb4Olds.length && !nb4Done) {
+    rows.push(mk('②', 'NB3', { id: null, name: 'NB3（アプリ内に該当商品名なし）', vendorName: 'ミツイ' }, nb4Olds, '要確認', ['R8'], nb4Notes.concat('アプリ内にトエルNB3の商品名がありません'), ['toel', 'numberthree'], { sortKey: [1, 3, 0], basis: nb4Basis }));
+  }
+  // 旧オレンジ → Te。明度 12・10・8・6 で、アプリ内に Te の商品が無いものは『アプリ内に該当商品名なし』と注記して結ぶ
+  TOEL_TE_LIGHTNESS.forEach(L => {
+    if (rows.some(r => r.family === 'TE' && r.level === L)) return;
+    const cands = tokyoP.filter(o => { const r = resolved.get(o.id); return r && r.status === 'ok' && r.family === 'TE' && r.level === L; });
+    if (!cands.length) return;
+    const notes = ['トエル Te の商品名がアプリ内にありません（殿ご教示 2026-11-22: Te の明度は 12・10・8・6。同じ明度の旧オレンジを結びました）'];
+    cands.forEach(o => { if (!getSourceColorIdentity(o.name, 'TE')) notes.push(`既存の参考値計算では拾われない表記「${o.name}」。この表だけ殿ご教示の対応で拾った`); });
+    rows.push(mk('①', `Te/${L}`, { id: null, name: `Te/${L}（アプリ内に該当商品名なし）`, vendorName: 'ミツイ' }, cands.map(oldRef), '確実', [], [...new Set(notes)], ['toel', 'asian', 'te', 'asianOrange'],
+      { family: 'TE', level: L, sortKey: [0, MAPPING_FAMILY_ORDER.indexOf('TE'), -L], basis: '殿ご教示 2026-11-22' }));
   });
 
   // ③④ ラボラボ（ウトエト）・その他（ナシード）
@@ -3066,7 +3097,7 @@ function buildMappingTable(products, vendors, orderHistory, now) {
       let hint = '';
       if (unresolved) { reasons.push('R9'); hint = r.status === 'nolevel' ? `系統は「${MAPPING_FAMILY_LABEL[r.family]}」と読めるが明度なし` : (r.status === 'ambiguous' ? '複数の系統に当たる・明度が食い違う' : 'どの系統にも当たらない'); }
       else if (inQuoline) hint = '③④の旧の一覧（殿が選ぶ）';
-      else if (r.status === 'ok') hint = `${MAPPING_FAMILY_LABEL[r.family]}${r.level === null ? '' : r.level}に対応するトエル${r.family === 'TE' ? '（Te）' : ''}がありません`;
+      else if (r.status === 'ok') hint = r.family === 'TE' ? `オレンジ${r.level}は Te の明度（${TOEL_TE_LIGHTNESS.join('・')}）に入りません。要確認` : `${MAPPING_FAMILY_LABEL[r.family]}${r.level === null ? '' : r.level}に対応するトエルがありません`;
       return {
         rowId: `旧-${tokyoIds.has(p.vendorId) ? '東京' : 'フジ'}-${p.name}`, system: '旧のみ', old: oldRef(p),
         reasons, hint, unresolved, family: r.family, level: r.level,
