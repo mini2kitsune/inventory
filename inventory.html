@@ -3213,7 +3213,7 @@ function buildMappingTable(products, vendors, orderHistory, now) {
   const quolineList = tokyoP.filter(p => MAPPING_QUOLINE_PATTERN.test(p.name)).map(oldRef);
   const quolineIds = new Set(quolineList.map(o => o.id));
   const oldOnly = oldP
-    .filter(p => !usedOld.has(p.id) && (p.active !== false || (lastMsById.get(p.id) || 0) >= yearAgo))
+    .filter(p => !usedOld.has(p.id) && !(fujiIds.has(p.vendorId) && getFujishinCc(p.name) === null) && (p.active !== false || (lastMsById.get(p.id) || 0) >= yearAgo))
     .map(p => {
       const r = resolved.get(p.id);
       const inQuoline = quolineIds.has(p.id);
