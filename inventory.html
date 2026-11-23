@@ -2757,8 +2757,11 @@ const MAPPING_CERTAIN_FAMILIES = ['A', 'N', 'V', 'P', 'R', 'M', 'MT', 'LT', 'TE'
 // 例: TE/8・TE8・TE 8・テラコッタ8・TERRACOTTA/8 → 明度8。明度が無い・読めない名前は拾わず「その他（要確認）」に出す。
 // Te の明度は 12・10・8・6（殿ご教示 2026-11-22）。旧オレンジはこの4つに入れば同じ明度の Te へ結ぶ。入らない明度（14 等）は要確認。
 const TOEL_TE_LIGHTNESS = [12, 10, 8, 6];
-// 旧ナンバースリー NB4（表記ゆれ: NB4・NB-4・NB/4・ナンバースリー NB4）。殿に確認中: 旧NB4→トエルNB3 か。確認が取れるまで要確認（確実にしない）。
+// 旧 アリミノ カラーストーリー NB4（東京理美容商会）→ トエル NB3。殿ご教示 2026-11-22 で確実。
+// 拾う条件: 「カラーストーリー／CS」の語を伴う NB4、または 仕入先が東京理美容商会で名前が NB4 の記号だけ（NB4・NB-4・NB/4・全角）。NB40・NB45 などは拾わない。
 const MAPPING_OLD_NB4_PATTERN = /(?:^|[^A-Z0-9])NB\s*[\/\-・.]?\s*4(?!\d)/;
+const MAPPING_OLD_NB4_BARE_PATTERN = /^NB\s*[\/\-・.]?\s*4$/;
+const MAPPING_COLOR_STORY_PATTERN = /カラーストーリー|(?:^|[^A-Z0-9])CS(?:$|[^A-Z0-9])/;
 const MAPPING_NB3_CODE_PATTERN = /^NB\s*[\/\-・.]?\s*3$/;
 const TOEL_TE_CODE_PATTERN = /^(?:TE|テラコッタ|TERRACOTTA)\s*[\/・.\-]?\s*(\d+)?$/;
 // 旧（アジアンカラーフェス）側の色名（カタカナ）と記号（アルファベット）。どちらの表記も同じ系統に解決する。
@@ -2796,7 +2799,7 @@ const MAPPING_REASON_TEXT = {
   R5: 'R5 出典で関係を確かめられない',
   R6: 'R6 店の対応表の旧の商品名を、アプリ内の商品から拾えない',
   R7: 'R7 店の対応表の新の商品名を、アプリ内の商品から特定できない',
-  R8: 'R8 殿に確認中（旧NB4→トエルNB3か）',
+  R8: 'R8 （撤回済み）旧NB4→トエルNB3は殿ご教示で確実',
   R9: 'R9 商品名をどの系統にも解決できない（表記を拾えず）',
 };
 
@@ -2946,9 +2949,16 @@ function buildMappingTable(products, vendors, orderHistory, now) {
   const tokyoP = products.filter(p => tokyoIds.has(p.vendorId));
   const resolved = new Map(oldP.map(p => [p.id, mappingResolveOldName(p.name)]));
   const rows = [];
-  const nb4Olds = oldP.filter(o => MAPPING_OLD_NB4_PATTERN.test(normalizeReferenceName(o.name))).map(oldRef);
-  const nb4Notes = ['殿に確認中: 旧NB4→トエルNB3か（将軍の解釈。殿の回答があるまで確実にしません）'];
-  const nb4Basis = '殿ご教示「NB4はNB3」（意味を殿に確認中）';
+  // カラーストーリーの NB4 以外の色番は調査中。系統に当てはめず（推測で結ばず）R9 要確認の「旧のみ」に出す。
+  oldP.forEach(o => { if (MAPPING_COLOR_STORY_PATTERN.test(normalizeReferenceName(o.name))) resolved.set(o.id, { family: null, level: null, status: 'none' }); });
+  const nb4Olds = oldP.filter(o => {
+    const s = normalizeReferenceName(o.name);
+    if (!MAPPING_OLD_NB4_PATTERN.test(s)) return false;
+    if (MAPPING_COLOR_STORY_PATTERN.test(s)) return true;
+    return tokyoIds.has(o.vendorId) && MAPPING_OLD_NB4_BARE_PATTERN.test(s);
+  }).map(oldRef);
+  const nb4Notes = ['旧 アリミノ カラーストーリー NB4（東京理美容商会）→ トエル白髪染め NB3（殿ご教示 2026-11-22・確実）'];
+  const nb4Basis = '殿ご教示 2026-11-22';
   let nb4Done = false;
   const mk = (system, rowKey, newP, olds, judge, reasons, notes, sourceKeys, extra) => {
     const oldsWithStats = olds.map(o => Object.assign({}, o, { stats: mappingHistoryStats([o.id], orderHistory, now) }));
@@ -2975,8 +2985,8 @@ function buildMappingTable(products, vendors, orderHistory, now) {
         { sortKey: [1, Object.keys(toelReferenceSourceToTarget).indexOf(code), 0], basis: '殿ご教示 2026-11-22（既存の対応表ロジックとも一致）: 6cc→NB5・8cc→NB7・10cc→brN11' }));
       return;
     }
-    if (nb4Olds.length && MAPPING_NB3_CODE_PATTERN.test(code)) { // 旧NB4→トエルNB3（殿に確認中）
-      rows.push(mk('②', code, newP, nb4Olds, '要確認', ['R8'], nb4Notes, ['toel', 'numberthree'], { sortKey: [1, 3, 0], basis: nb4Basis }));
+    if (nb4Olds.length && MAPPING_NB3_CODE_PATTERN.test(code)) { // 旧NB4→トエルNB3（殿ご教示で確実）
+      rows.push(mk('②', code, newP, nb4Olds, '確実', [], nb4Notes, ['toel', 'numberthree'], { sortKey: [1, 3, 0], basis: nb4Basis }));
       nb4Done = true;
       return;
     }
@@ -3016,9 +3026,9 @@ function buildMappingTable(products, vendors, orderHistory, now) {
       { family, level, sortKey: [0, MAPPING_FAMILY_ORDER.indexOf(family), -(level || 0)], basis: '殿ご教示 2026-11-22' }));
   });
 
-  // 旧NB4 があるのにアプリ内にトエルNB3の商品名がない → 候補『トエル NB3』を示した要確認行
+  // 旧NB4 があるのにアプリ内にトエルNB3の商品名がない → 『アプリ内に該当商品名なし』と注記して確実で結ぶ（Te と同様）
   if (nb4Olds.length && !nb4Done) {
-    rows.push(mk('②', 'NB3', { id: null, name: 'NB3（アプリ内に該当商品名なし）', vendorName: 'ミツイ' }, nb4Olds, '要確認', ['R8'], nb4Notes.concat('アプリ内にトエルNB3の商品名がありません'), ['toel', 'numberthree'], { sortKey: [1, 3, 0], basis: nb4Basis }));
+    rows.push(mk('②', 'NB3', { id: null, name: 'NB3（アプリ内に該当商品名なし）', vendorName: 'ミツイ' }, nb4Olds, '確実', [], nb4Notes.concat('トエル NB3 の商品名がアプリ内にありません（殿ご教示 2026-11-22: 旧NB4→トエルNB3）'), ['toel', 'numberthree'], { sortKey: [1, 3, 0], basis: nb4Basis }));
   }
   // 旧オレンジ → Te。明度 12・10・8・6 で、アプリ内に Te の商品が無いものは『アプリ内に該当商品名なし』と注記して結ぶ
   TOEL_TE_LIGHTNESS.forEach(L => {
@@ -3095,7 +3105,7 @@ function buildMappingTable(products, vendors, orderHistory, now) {
       const unresolved = !inQuoline && !isCc && r.status !== 'ok';
       const reasons = ['R4'];
       let hint = '';
-      if (unresolved) { reasons.push('R9'); hint = r.status === 'nolevel' ? `系統は「${MAPPING_FAMILY_LABEL[r.family]}」と読めるが明度なし` : (r.status === 'ambiguous' ? '複数の系統に当たる・明度が食い違う' : 'どの系統にも当たらない'); }
+      if (unresolved) { reasons.push('R9'); hint = MAPPING_COLOR_STORY_PATTERN.test(normalizeReferenceName(p.name)) ? 'カラーストーリー（NB4以外）。対応するトエルの色番は調査中のため、推測で結ばず要確認' : r.status === 'nolevel' ? `系統は「${MAPPING_FAMILY_LABEL[r.family]}」と読めるが明度なし` : (r.status === 'ambiguous' ? '複数の系統に当たる・明度が食い違う' : 'どの系統にも当たらない'); }
       else if (inQuoline) hint = '③④の旧の一覧（殿が選ぶ）';
       else if (r.status === 'ok') hint = r.family === 'TE' ? `オレンジ${r.level}は Te の明度（${TOEL_TE_LIGHTNESS.join('・')}）に入りません。要確認` : `${MAPPING_FAMILY_LABEL[r.family]}${r.level === null ? '' : r.level}に対応するトエルがありません`;
       return {
