@@ -2759,8 +2759,9 @@ const MAPPING_CERTAIN_FAMILIES = ['A', 'N', 'V', 'P', 'R', 'M', 'MT', 'LT', 'TE'
 const TOEL_TE_LIGHTNESS = [12, 10, 8, 6];
 // 旧 アリミノ カラーストーリー NB4（東京理美容商会）→ トエル NB3。殿ご教示 2026-11-22 で確実。
 // 拾う条件: 「カラーストーリー／CS」の語を伴う NB4、または 仕入先が東京理美容商会で名前が NB4 の記号だけ（NB4・NB-4・NB/4・全角）。NB40・NB45 などは拾わない。
-const MAPPING_OLD_NB4_PATTERN = /(?:^|[^A-Z0-9])NB\s*[\/\-・.]?\s*4(?!\d)/;
-const MAPPING_OLD_NB4_BARE_PATTERN = /^NB\s*[\/\-・.]?\s*4$/;
+// 旧は「4NB」（明度＋記号）順の表記もある（足軽3号の調査 §11）。14NB・4NBX・NB/40 などは拾わない。
+const MAPPING_OLD_NB4_PATTERN = /(?:^|[^A-Z0-9])NB\s*[\/\-・.]?\s*4(?!\d)|(?:^|[^A-Z0-9\/\-・.])4\s*NB(?![A-Z0-9])/;
+const MAPPING_OLD_NB4_BARE_PATTERN = /^(?:NB\s*[\/\-・.]?\s*4|4\s*NB)$/;
 const MAPPING_COLOR_STORY_PATTERN = /カラーストーリー|(?:^|[^A-Z0-9])CS(?:$|[^A-Z0-9])/;
 const MAPPING_NB3_CODE_PATTERN = /^NB\s*[\/\-・.]?\s*3$/;
 const TOEL_TE_CODE_PATTERN = /^(?:TE|テラコッタ|TERRACOTTA)\s*[\/・.\-]?\s*(\d+)?$/;
@@ -2789,6 +2790,8 @@ const MAPPING_SOURCES = {
   quoline: { label: 'クオライン', url: 'https://www.beautygarage.jp/pickup/arimino-quoline' },
   cosme: { label: 'コスメカール', url: 'https://www.arimino.co.jp/corporate/wp-content/uploads/2024/03/cosme_series2504.pdf' },
   utet: { label: 'ウトエト', url: 'https://www.wwdjapan.com/articles/1873599' },
+  csNb: { label: 'カラーストーリー NB（b-zone）', url: 'https://www.b-zone.biz/products/detail/377580' },
+  csNb2: { label: 'カラーストーリー NB（ビューティガレージ）', url: 'https://www.beautygarage.jp/p/107763' },
   numberthree: { label: 'ナンバースリー', url: 'https://www.beautygarage.jp/p/150213' },
 };
 const MAPPING_REASON_TEXT = {
@@ -2957,7 +2960,7 @@ function buildMappingTable(products, vendors, orderHistory, now) {
     if (MAPPING_COLOR_STORY_PATTERN.test(s)) return true;
     return tokyoIds.has(o.vendorId) && MAPPING_OLD_NB4_BARE_PATTERN.test(s);
   }).map(oldRef);
-  const nb4Notes = ['旧 アリミノ カラーストーリー NB4（東京理美容商会）→ トエル白髪染め NB3（殿ご教示 2026-11-22・確実）'];
+  const nb4Notes = ['旧 アリミノ カラーストーリー NB4（東京理美容商会）→ トエル白髪染め NB3（殿ご教示 2026-11-22・確実）', 'NB の数字は明度。旧 NB4 と新 NB3 の明度が同じとは限らない（殿が表で最終確認）。カラーストーリーの他の色番は要確認'];
   const nb4Basis = '殿ご教示 2026-11-22';
   let nb4Done = false;
   const mk = (system, rowKey, newP, olds, judge, reasons, notes, sourceKeys, extra) => {
@@ -2986,7 +2989,7 @@ function buildMappingTable(products, vendors, orderHistory, now) {
       return;
     }
     if (nb4Olds.length && MAPPING_NB3_CODE_PATTERN.test(code)) { // 旧NB4→トエルNB3（殿ご教示で確実）
-      rows.push(mk('②', code, newP, nb4Olds, '確実', [], nb4Notes, ['toel', 'numberthree'], { sortKey: [1, 3, 0], basis: nb4Basis }));
+      rows.push(mk('②', code, newP, nb4Olds, '確実', [], nb4Notes, ['toel', 'numberthree', 'csNb', 'csNb2'], { sortKey: [1, 3, 0], basis: nb4Basis }));
       nb4Done = true;
       return;
     }
@@ -3028,7 +3031,7 @@ function buildMappingTable(products, vendors, orderHistory, now) {
 
   // 旧NB4 があるのにアプリ内にトエルNB3の商品名がない → 『アプリ内に該当商品名なし』と注記して確実で結ぶ（Te と同様）
   if (nb4Olds.length && !nb4Done) {
-    rows.push(mk('②', 'NB3', { id: null, name: 'NB3（アプリ内に該当商品名なし）', vendorName: 'ミツイ' }, nb4Olds, '確実', [], nb4Notes.concat('トエル NB3 の商品名がアプリ内にありません（殿ご教示 2026-11-22: 旧NB4→トエルNB3）'), ['toel', 'numberthree'], { sortKey: [1, 3, 0], basis: nb4Basis }));
+    rows.push(mk('②', 'NB3', { id: null, name: 'NB3（アプリ内に該当商品名なし）', vendorName: 'ミツイ' }, nb4Olds, '確実', [], nb4Notes.concat('トエル NB3 の商品名がアプリ内にありません（殿ご教示 2026-11-22: 旧NB4→トエルNB3）'), ['toel', 'numberthree', 'csNb', 'csNb2'], { sortKey: [1, 3, 0], basis: nb4Basis }));
   }
   // 旧オレンジ → Te。明度 12・10・8・6 で、アプリ内に Te の商品が無いものは『アプリ内に該当商品名なし』と注記して結ぶ
   TOEL_TE_LIGHTNESS.forEach(L => {
