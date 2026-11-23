@@ -2762,7 +2762,7 @@ const TOEL_TE_LIGHTNESS = [12, 10, 8, 6];
 // 旧は「4NB」（明度＋記号）順の表記もある（足軽3号の調査 §11）。14NB・4NBX・NB/40 などは拾わない。
 const MAPPING_OLD_NB4_PATTERN = /(?:^|[^A-Z0-9])NB\s*[\/\-・.]?\s*4(?!\d)|(?:^|[^A-Z0-9\/\-・.])4\s*NB(?![A-Z0-9])/;
 const MAPPING_OLD_NB4_BARE_PATTERN = /^(?:NB\s*[\/\-・.]?\s*4|4\s*NB)$/;
-const MAPPING_COLOR_STORY_PATTERN = /カラーストーリー|(?:^|[^A-Z0-9])CS(?:$|[^A-Z0-9])/;
+const MAPPING_COLOR_STORY_PATTERN = /カラーストーリー|(?:^|[^A-Z0-9])CS(?!\s*オアシック)(?:$|[^A-Z0-9])/; // 『CSオアシック』（ヘアマニキュア）はカラーストーリーの略 CS ではない
 const MAPPING_NB3_CODE_PATTERN = /^NB\s*[\/\-・.]?\s*3$/;
 const TOEL_TE_CODE_PATTERN = /^(?:TE|テラコッタ|TERRACOTTA)\s*[\/・.\-]?\s*(\d+)?$/;
 // 旧（アジアンカラーフェス）側の色名（カタカナ）と記号（アルファベット）。どちらの表記も同じ系統に解決する。
@@ -2780,7 +2780,7 @@ const MAPPING_OLD_FAMILIES = {
 const MAPPING_LEVELLESS_FAMILIES = ['LT']; // 明度なしでも系統として扱える（オレンジは明度が無ければ結べないので含めない）
 const MAPPING_FAMILY_ORDER = ['A', 'N', 'M', 'MT', 'V', 'P', 'R', 'LT', 'TE'];
 const MAPPING_FAMILY_LABEL = { A: 'アッシュ', N: 'ナチュラル', V: 'バイオレット', P: 'ピンク', R: 'レッド', MT: 'グレイ', M: 'マット', LT: 'ライトナー', TE: 'オレンジ' };
-const MAPPING_SYSTEM_ORDER = ['①', '②', '③④', '他'];
+const MAPPING_SYSTEM_ORDER = ['①', '②', '③④', '⑤', '他'];
 const MAPPING_QUOLINE_PATTERN = /クオライン|コスメ|プリズム|アフターローション|アジャスト/;
 const MAPPING_SOURCES = {
   toel: { label: 'トエル 色番体系', url: 'https://www.beautygarage.jp/p/247482' },
@@ -2802,8 +2802,10 @@ const MAPPING_REASON_TEXT = {
   R5: 'R5 出典で関係を確かめられない',
   R6: 'R6 店の対応表の旧の商品名を、アプリ内の商品から拾えない',
   R7: 'R7 店の対応表の新の商品名を、アプリ内の商品から特定できない',
-  R8: 'R8 （撤回済み）旧NB4→トエルNB3は殿ご教示で確実',
   R9: 'R9 商品名をどの系統にも解決できない（表記を拾えず）',
+  R10: 'R10 名前が一致（同じ商品かは殿のご確認が必要）',
+  R11: 'R11 名前が似ている（部分一致・別名）',
+  R12: 'R12 新のみ（旧の候補なし）',
 };
 
 // 旧商品名 → 系統と明度。カタカナ表記（アッシュ6・6アッシュ）とアルファベット表記（A6・A/6・G/8・OR8）の両方を拾う。
@@ -2840,16 +2842,44 @@ function mappingResolveOldName(name) {
   return { family, level, status: 'ok' };
 }
 
+// ---- 系統⑤ 仕入先変更（同じ商品）。docs/inventory_mapping_table_proposal.md §10 ----
+// 殿ご回答 2026-11-23: Q-E=yes（東京とフジシン／ミツイで名前が完全に一致する商品はまとめて同じ商品。違う組だけ殿が行番号で知らせる）。
+// false にすると名前一致のみの組（段階B）は要確認 R10 に戻る。
+const MAPPING_SWITCH_NAME_MATCH_APPROVED = true;
+// 別名の置き換え（先頭一致）。exact=true は『ブランド名の前置き』で、消した後の一致は名前の完全一致と同じ扱い。
+// exact=false（コスメ→コスメカール）は別名での一致＝『似ている』。足すのは殿のご教示か出典がある場合だけ。
+const MAPPING_SWITCH_SYNONYMS = [
+  { re: /^(?:CS|カラー)?オアシック/, to: '', exact: true, label: 'オアシックの前置きを除く' },
+  { re: /^コスメ(?!カール)/, to: 'コスメカール', exact: false, label: 'コスメ→コスメカール' },
+];
+// 正規化キー。opts.only: 'exact'=前置きの置き換えだけ適用／'all'=すべて適用／'none'=置き換えなし
+function mappingSwitchKey(name, only) {
+  let s = normalizeReferenceName(name);
+  s = s.replace(/【[^】]*】|\([^)]*\)|\[[^\]]*\]|［[^］]*］/g, '');
+  s = s.replace(/\d+(?:\.\d+)?\s*(?:G|KG|ML|L|本|個|入|枚)(?![A-Z])/g, '');
+  s = s.replace(/([ァ-ヶ])[ｰ‐‑‒–−―]/g, '$1ー').replace(/[‐‑‒–−―]/g, '-'); // カタカナの後ろはー、それ以外はハイフン扱い
+  s = s.replace(/[\s・\/\.\-_,、。'’"]/g, '');
+  if (only && only !== 'none') {
+    MAPPING_SWITCH_SYNONYMS.forEach(syn => { if ((only === 'all' || syn.exact) && syn.re.test(s)) s = s.replace(syn.re, syn.to); });
+  }
+  return s;
+}
+function mappingSwitchAliasLabel(a, b) { // 別名で一致したときの説明
+  const labels = MAPPING_SWITCH_SYNONYMS.filter(syn => !syn.exact && (syn.re.test(mappingSwitchKey(a, 'none')) || syn.re.test(mappingSwitchKey(b, 'none')))).map(syn => syn.label);
+  return labels.join('・');
+}
+
 // 東京→フジシンの複製（copyTokyoRangeToFujishin）で増えた履歴の二重計上を除く。
 // 東京理美容／フジシンの商品の行だけを、組キー 商品名（そのまま）|時刻|数量|在庫 でまとめ、商品IDごとの行数の最大ぶんだけ残す。
 // それ以外（名前が違う・ほかの仕入先・トエル自身）は全部残す。
-function dedupeCopyPairRows(orderHistory, products, vendors) {
+function dedupeCopyPairInfo(orderHistory, products, vendors) {
   const vOk = new Map((vendors || []).map(v => [v.id, String(v.name || '').includes('東京理美容') || String(v.name || '').includes('フジシン')]));
   const pMap = new Map((products || []).map(p => [p.id, p]));
   const tokyoV = new Set((vendors || []).filter(v => String(v.name || '').includes('東京理美容')).map(v => v.id));
   const tokyoOf = id => tokyoV.has(pMap.get(id)?.vendorId);
   const groups = new Map();
   const out = [];
+  const droppedByPair = new Map(); // '東京の商品ID|フジシンの商品ID' → まとめた（捨てた）行数
   (orderHistory || []).forEach(h => {
     const p = pMap.get(h.productId);
     const t = new Date(h.date).getTime();
@@ -2866,8 +2896,65 @@ function dedupeCopyPairRows(orderHistory, products, vendors) {
     // 行数が同じときは複製元（仕入先が東京理美容）の商品を残す。東京がなければ先頭のまま。
     const keep = top.find(id => tokyoOf(id)) || top[0];
     g.rows.filter(h => h.productId === keep).forEach(h => out.push(h));
+    g.counts.forEach((c, id) => {
+      if (id === keep) return;
+      const key = tokyoOf(id) && !tokyoOf(keep) ? `${id}|${keep}` : `${keep}|${id}`;
+      droppedByPair.set(key, (droppedByPair.get(key) || 0) + c);
+    });
   });
-  return out;
+  return { rows: out, droppedByPair };
+}
+function dedupeCopyPairRows(orderHistory, products, vendors) { // 従来どおり行だけを返す（規則は変えない）
+  return dedupeCopyPairInfo(orderHistory, products, vendors).rows;
+}
+
+
+// 系統⑤の候補（純粋関数）。oldTokyo=旧の対象（東京）、newCands=新の対象（フジシン・ミツイ）。
+// 戻り値: 新ごとに { newP, olds:[旧の商品], stage:'A'|'B'|'C'|null, reasons, matchLabel, copyDropped, basis }
+function mappingBuildSwitchRows(oldTokyo, newCands, fujiIds, droppedByPair) {
+  droppedByPair = droppedByPair || new Map();
+  const info = o => ({ p: o, ex: mappingSwitchKey(o.name, 'exact'), all: mappingSwitchKey(o.name, 'all') });
+  const O = oldTokyo.map(info).filter(x => x.all);
+  const edges = []; // { o, n, kind:'exact'|'alias'|'contain' }
+  newCands.map(info).filter(x => x.all).forEach(n => {
+    O.forEach(o => {
+      let kind = null;
+      if (o.ex && o.ex === n.ex) kind = 'exact';
+      else if (o.all === n.all) kind = 'alias';
+      else {
+        const [sh, lg] = o.all.length <= n.all.length ? [o.all, n.all] : [n.all, o.all];
+        if (sh.length >= 3 && lg.includes(sh)) kind = 'contain';
+      }
+      if (kind) edges.push({ o, n, kind });
+    });
+  });
+  // 完全一致があれば、その新・旧については弱い候補（別名・部分一致）を捨てる（ノイズを減らす）
+  const hasExactN = new Set(edges.filter(e => e.kind === 'exact').map(e => e.n.p.id));
+  const hasExactO = new Set(edges.filter(e => e.kind === 'exact').map(e => e.o.p.id));
+  const keep = edges.filter(e => e.kind === 'exact' || (!hasExactN.has(e.n.p.id) && !hasExactO.has(e.o.p.id)));
+  const byNew = new Map(); const oldUse = new Map();
+  keep.forEach(e => {
+    if (!byNew.has(e.n.p.id)) byNew.set(e.n.p.id, []);
+    byNew.get(e.n.p.id).push(e);
+    oldUse.set(e.o.p.id, (oldUse.get(e.o.p.id) || 0) + 1);
+  });
+  return newCands.map(np => {
+    const es = byNew.get(np.id) || [];
+    if (!es.length) return { newP: np, olds: [], stage: null, reasons: ['R12'], matchLabel: '', copyDropped: 0, basis: '' };
+    const copyDropped = es.reduce((a, e) => a + (droppedByPair.get(`${e.o.p.id}|${np.id}`) || 0), 0);
+    const allExact = es.every(e => e.kind === 'exact');
+    const isFuji = fujiIds.has(np.vendorId);
+    const stage = allExact ? (isFuji && copyDropped > 0 ? 'A' : 'B') : 'C';
+    const reasons = [];
+    let basis = '';
+    if (stage === 'A') basis = '名前が完全一致し、既存の複製処理（フジシンへの履歴コピー）が同じ商品として扱っている';
+    else if (stage === 'B') { if (MAPPING_SWITCH_NAME_MATCH_APPROVED) basis = '名前完全一致（殿ご了承 Q-E 2026-11-23: 違う組だけ殿が行番号でお知らせ）'; else reasons.push('R10'); }
+    else reasons.push('R11');
+    if (es.length > 1 || es.some(e => oldUse.get(e.o.p.id) > 1)) reasons.push('R1');
+    const alias = es.filter(e => e.kind === 'alias').map(e => mappingSwitchAliasLabel(e.o.p.name, e.n.p.name)).filter(Boolean);
+    const matchLabel = allExact ? '完全一致' : (es.some(e => e.kind === 'alias') ? `似ている（別名『${[...new Set(alias)].join('・') || '別名'}』）` : '似ている（部分一致）');
+    return { newP: np, olds: es.map(e => e.o.p), stage, reasons, matchLabel, copyDropped, basis };
+  });
 }
 
 // productIds の履歴を『合計』で集計（1トエル色＝対応する旧商品すべての合計＋トエル自身。月数の分母は全商品を通した1つの窓）。
@@ -2939,7 +3026,8 @@ function mappingUteetLookup(newName) {
 function buildMappingTable(products, vendors, orderHistory, now) {
   products = products || []; vendors = vendors || [];
   const rawHistoryLen = (orderHistory || []).length;
-  orderHistory = dedupeCopyPairRows(orderHistory || [], products, vendors);
+  const dedupeInfo = dedupeCopyPairInfo(orderHistory || [], products, vendors);
+  orderHistory = dedupeInfo.rows;
   const copyDropped = rawHistoryLen - orderHistory.length; // フジシンへの複製として1回にまとめた行数
   const vname = id => vendors.find(v => v.id === id)?.name || '';
   const idsOf = pred => new Set(vendors.filter(pred).map(v => v.id));
@@ -3076,6 +3164,31 @@ function buildMappingTable(products, vendors, orderHistory, now) {
     }
   });
 
+  // ⑤ 仕入先変更（同じ商品）: 旧＝東京理美容商会（①〜④に入っていないもの）／新＝フジシン・ミツイの非トエル商品（cc 商品は②の旧なので除く）
+  const usedBefore5 = new Set();
+  rows.forEach(r => r.olds.forEach(o => usedBefore5.add(o.id)));
+  const lastMs5 = new Map();
+  orderHistory.forEach(h => {
+    const t = new Date(h.date).getTime();
+    if (Number.isFinite(t) && (!lastMs5.has(h.productId) || t > lastMs5.get(h.productId))) lastMs5.set(h.productId, t);
+  });
+  const yearAgo5 = now.getTime() - 365 * 86400000;
+  const sw = mappingBuildSwitchRows(
+    tokyoP.filter(p => !usedBefore5.has(p.id) && (p.active !== false || (lastMs5.get(p.id) || 0) >= yearAgo5)),
+    products.filter(p => (fujiIds.has(p.vendorId) || mitsuiIds.has(p.vendorId)) && p.active !== false && !isToelProduct(p) && getFujishinCc(p.name) === null && !usedBefore5.has(p.id)),
+    fujiIds, dedupeInfo.droppedByPair);
+  const newOnly5 = [];
+  sw.forEach(c => {
+    const newP = { id: c.newP.id, name: c.newP.name, vendorName: vname(c.newP.vendorId) };
+    if (!c.olds.length) { newOnly5.push({ rowId: `⑤新-${c.newP.name}`, system: '⑤新のみ', newP, reasons: ['R12'], newStats: mappingHistoryStats([c.newP.id], orderHistory, now) }); return; }
+    const reasons = c.reasons.slice();
+    const row = mk('⑤', c.newP.name, newP, c.olds.map(oldRef), reasons.length ? '要確認' : '確実', reasons, [], [],
+      { sortKey: [2.5, 0, 0], stage: c.stage, matchLabel: c.matchLabel, copyDropped5: c.copyDropped, basis: c.basis });
+    rows.push(row);
+  });
+  const newOnlyIdCount = new Map();
+  newOnly5.forEach(r => { const n = (newOnlyIdCount.get(r.rowId) || 0) + 1; newOnlyIdCount.set(r.rowId, n); if (n > 1) r.rowId += `#${n}`; });
+
   // rowId の重複には #2 を付ける
   const idCount = new Map();
   rows.forEach(r => {
@@ -3111,6 +3224,7 @@ function buildMappingTable(products, vendors, orderHistory, now) {
       if (unresolved) { reasons.push('R9'); hint = MAPPING_COLOR_STORY_PATTERN.test(normalizeReferenceName(p.name)) ? 'カラーストーリー（NB4以外）。対応するトエルの色番は調査中のため、推測で結ばず要確認' : r.status === 'nolevel' ? `系統は「${MAPPING_FAMILY_LABEL[r.family]}」と読めるが明度なし` : (r.status === 'ambiguous' ? '複数の系統に当たる・明度が食い違う' : 'どの系統にも当たらない'); }
       else if (inQuoline) hint = '③④の旧の一覧（殿が選ぶ）';
       else if (r.status === 'ok') hint = r.family === 'TE' ? `オレンジ${r.level}は Te の明度（${TOEL_TE_LIGHTNESS.join('・')}）に入りません。要確認` : `${MAPPING_FAMILY_LABEL[r.family]}${r.level === null ? '' : r.level}に対応するトエルがありません`;
+      if (tokyoIds.has(p.vendorId)) hint = (hint ? hint + '。' : '') + '同じ商品をフジシン・ミツイで頼んでいれば、その商品名をお知らせください';
       return {
         rowId: `旧-${tokyoIds.has(p.vendorId) ? '東京' : 'フジ'}-${p.name}`, system: '旧のみ', old: oldRef(p),
         reasons, hint, unresolved, family: r.family, level: r.level,
@@ -3122,8 +3236,8 @@ function buildMappingTable(products, vendors, orderHistory, now) {
   oldOnly.sort((a, b) => (b.unresolved ? 1 : 0) - (a.unresolved ? 1 : 0) || a.rowId.localeCompare(b.rowId, 'ja'));
 
   return {
-    certain, pending, oldOnly, quolineList, copyDropped,
-    counts: { certain: certain.length, pending: pending.length, oldOnly: oldOnly.length, unresolved: oldOnly.filter(r => r.unresolved).length },
+    certain, pending, oldOnly, quolineList, copyDropped, newOnly: newOnly5,
+    counts: { certain: certain.length, pending: pending.length, oldOnly: oldOnly.length, newOnly: newOnly5.length, unresolved: oldOnly.filter(r => r.unresolved).length },
   };
 }
 // MAPPING-PURE-END
