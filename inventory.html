@@ -3256,7 +3256,31 @@ function mappingSourceLinks(keys) {
     .map(s => `<a href="${esc(s.url)}" target="_blank" rel="noopener" style="color:var(--accent-light);">${esc(s.label)}</a>`).join('・');
 }
 
+function mappingSwitchCardHtml(r) {
+  const judgeColor = r.judge === '確実' ? 'var(--success)' : 'var(--warning)';
+  const reasons = r.reasons.map(c => esc(MAPPING_REASON_TEXT[c] || c)).join('／');
+  const basis = r.basis ? ` 根拠: ${esc(r.basis)}` : '';
+  const olds = r.olds.map(o => `<div style="margin:2px 0 0 8px;">← 旧: ${esc(o.name)}（${esc(o.vendorName)}）${o.active ? '' : '（非表示）'}</div>`).join('');
+  const copy = r.copyDropped5 > 0 ? `<div style="font-size:11px;color:var(--text-sub);margin-top:2px;">注記: フジシンへの履歴コピー済み（${r.copyDropped5}件）。1回だけ数えます</div>` : '';
+  return `<div style="background:var(--surface2);border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
+    <div><span style="display:inline-block;background:rgba(108,99,255,0.25);border-radius:8px;padding:1px 8px;font-size:12px;margin-right:6px;">${esc(r.rowId)}</span>${productNameHtml(r.newP.name)}（仕入先: ${esc(r.newP.vendorName)}）</div>
+    <div style="margin-top:4px;">${olds}</div>
+    <div style="margin-top:4px;">名前: ${esc(r.matchLabel)}</div>
+    <div style="margin-top:4px;color:var(--text-sub);">${esc(mappingStatsText(r.oldStats, r.newStats))}</div>
+    <div style="margin-top:4px;"><span style="color:${judgeColor};font-weight:700;">${esc(r.judge)}</span>${reasons ? '：' + reasons : ''}${basis}</div>
+    ${copy}
+  </div>`;
+}
+
+function mappingNewOnlyHtml(r) {
+  return `<div style="background:var(--surface2);border-radius:12px;padding:8px 12px;margin-bottom:6px;font-size:13px;">
+    <div><span style="display:inline-block;background:rgba(108,99,255,0.25);border-radius:8px;padding:1px 8px;font-size:12px;margin-right:6px;">${esc(r.rowId)}</span>${productNameHtml(r.newP.name)}（${esc(r.newP.vendorName)}）</div>
+    <div style="margin-top:4px;color:var(--text-sub);">新 ${MAPPING_WINDOW_DAYS}日で ${r.newStats.qty}個（${r.newStats.count}回）｜<span style="color:var(--warning);font-weight:700;">要確認</span>：${esc(MAPPING_REASON_TEXT.R12)}</div>
+  </div>`;
+}
+
 function mappingCardHtml(r) {
+  if (r.system === '⑤') return mappingSwitchCardHtml(r);
   const judgeColor = r.judge === '確実' ? 'var(--success)' : 'var(--warning)';
   const oldText = r.olds.length
     ? '← 旧（' + r.olds.length + '商品）' + r.olds.map(o => `<div style="margin:2px 0 0 8px;">・${esc(o.name)}（${esc(o.vendorName)}）${o.active ? '' : '（非表示）'}<span style="color:var(--text-sub);font-size:12px;">　${esc(mappingStatsText(o.stats, null))}</span></div>`).join('')
@@ -3291,6 +3315,7 @@ const MAPPING_SYSTEM_NOTES = {
   '①': '旧（東京理美容商会のカラー）→ トエル ファッション。殿ご教示（2026-11-22）の対応を、カタカナ表記・アルファベット表記の両方で拾っています。旧はアジアンカラーフェスと伺っていますが、アプリの旧商品名にブランド名は入っていません。',
   '②': '旧（フジシンの cc）→ トエル 白髪染め。殿は「ナンバースリー」とおっしゃっていましたが、コードはフジシン／東京理美容商会の cc 表記で照合しています。',
   '③④': 'ラボラボのウトエト。旧（アリミノのクオライン・コスメカール・アジャスト）→ 新（ナプラ）。殿の店の対応表（写真・2026-11-22）をそのまま反映しています。表にない2剤（クリーム・ローション）は候補を出していません。',
+  '⑤': '東京理美容商会で頼んでいた同じ商品を、仕入先だけ変えてフジシン・ミツイで頼んでいるもの。名前の一致・類似で候補を出しています。',
   '他': '対応する旧が見つからない新商品（Be・e: 系、ナシード等）。',
 };
 
@@ -3300,7 +3325,7 @@ function renderMappingModal() {
   const t = buildMappingTable(DATA.products, DATA.vendors, DATA.orderHistory, new Date());
   const ask = '違う行・分からない行の番号だけ将軍にお知らせください（例: ①-M/8 は違う）。お知らせがなければ「確実」はすべて OK と見なします。';
   let html = `<div style="font-size:12px;color:var(--text-sub);margin-bottom:8px;">この画面では何も変わりません（見るだけ）。</div>
-    <div style="font-size:14px;font-weight:700;margin-bottom:6px;">確実 ${t.counts.certain}件／要確認 ${t.counts.pending}件／旧のみ ${t.counts.oldOnly}件</div>
+    <div style="font-size:14px;font-weight:700;margin-bottom:6px;">確実 ${t.counts.certain}件／要確認 ${t.counts.pending}件／旧のみ ${t.counts.oldOnly}件／⑤新のみ ${t.counts.newOnly}件</div>
     <div style="font-size:13px;color:${t.counts.unresolved ? 'var(--warning)' : 'var(--text-sub)'};margin-bottom:6px;">どの系統にも解決できなかった旧商品: ${t.counts.unresolved}件（下の「旧のみ」に出しています）</div>
     <div style="font-size:12px;color:var(--text-sub);margin-bottom:12px;">${esc(ask)}</div>`;
 
@@ -3327,6 +3352,9 @@ function renderMappingModal() {
 
   html += `<h3 style="font-size:15px;margin:16px 0 6px;color:var(--warning);">旧のみ・新の候補なし（${t.counts.oldOnly}件）</h3>`
     + (t.oldOnly.length ? t.oldOnly.map(mappingOldOnlyHtml).join('') : '<div style="font-size:12px;color:var(--text-sub);">なし</div>');
+  html += `<h3 style="font-size:15px;margin:16px 0 6px;color:var(--warning);">⑤ 新のみ・旧の候補なし（${t.counts.newOnly}件）</h3>`
+    + `<div style="font-size:12px;color:var(--text-sub);margin-bottom:4px;">フジシン・ミツイの商品で、東京理美容商会に名前の合う旧がないもの。同じ商品を以前東京で頼んでいたなら、その旧の商品名をお知らせください。</div>`
+    + (t.newOnly.length ? t.newOnly.map(mappingNewOnlyHtml).join('') : '<div style="font-size:12px;color:var(--text-sub);">なし</div>');
   html += `<div style="font-size:12px;color:var(--text-sub);margin-top:12px;">${esc(ask)}</div>`;
   body.innerHTML = html;
 }
