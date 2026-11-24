@@ -3297,6 +3297,30 @@ function mappingBuildManualLinks(t, products, vendors, orderHistory, now) {
   });
   return { links, count: links.length };
 }
+// ---- 比較表の rowId（§12.12 ③）。比較表と対応表の両方が同じ値を使う。MAPPING-PURE 内に置くのは、対応表の描画側からだけ呼べるようにするため ----
+function compareIsTarget(p, vendors) {
+  return !(p.active === false || (vendors || []).find(v => v.id === p.vendorId)?.isActive === false);
+}
+// 表示の対象（compareIsTarget）の全商品について、基本の名前 `比較-仕入先-商品名（トエルは色番）` が重なれば商品IDの順で #2… を付けた Map<商品ID, rowId>。
+// 表示した行だけで数えない（表示の枠が変わっても、お知らせいただいた番号がずれない）。
+function compareRowIdMap(products, vendors) {
+  const groups = new Map();
+  (products || []).forEach(p => {
+    if (!compareIsTarget(p, vendors)) return;
+    const vendor = (vendors || []).find(v => v.id === p.vendorId);
+    const short = vendor ? (vendor.shortName || vendor.name) : '';
+    const isToel = !!(vendor && vendor.name === 'ミツイ' && isToelProduct(p));
+    const base = `比較-${short}-${isToel ? getToelProductCode(p) : p.name}`;
+    if (!groups.has(base)) groups.set(base, []);
+    groups.get(base).push(p);
+  });
+  const out = new Map();
+  groups.forEach((list, base) => {
+    list.sort((a, b) => String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0)
+      .forEach((p, i) => out.set(p.id, i ? `${base}#${i + 1}` : base));
+  });
+  return out;
+}
 // MAPPING-PURE-END
 
 // ---- P2a 推奨数の比較表（試算・読み取り専用）。docs/inventory_mapping_table_proposal.md §12 ----
@@ -3310,7 +3334,8 @@ const COMPARE_LOW_FREQ = { minEvents: 3, intervalDays: 45, sinceLastDays: 60, mo
 const COMPARE_BUCKETS = [
   { key: 'low', title: '切らせない低頻度の商材で減るもの（下限なし注意を含む）', note: 'たまにしか頼まないが、無いと困る商材。新方式で目標が減る／最低在庫が0のままのものを、必ず1件ずつ確かめてください。' },
   { key: 'big', title: '差が大きい・減るもの', note: `推奨の差が${COMPARE_BIG_DIFF}個以上、推奨が0個↔1個以上に変わる、または推奨が減るもの。` },
-  { key: 'toel', title: 'トエル全色', note: '結び付けがなくても全色を出しています（結び付けのない色は今の計算のまま）。' },
+  { key: 'unlinked', title: 'つながり未設定', note: '後継元（旧）が未設定の商品です。新方式は計算せず今の計算のままなので、今＝新です。対応表で要確認のもの・⑤新のみ・トエル・直近180日に発注のある商品はカードで、それ以外は名前の箱に全部並べます。' },
+  { key: 'toel', title: 'トエル全色（結び付けのある色）', note: '結び付けのある色です。未設定の色は「つながり未設定」の枠に出しています（この2つを合わせて全色）。' },
   { key: 'sw5', title: '⑤ 仕入先変更（同じ商品）', note: '対応表の⑤「確実」の結び付けを仮に使ったもの。' },
   { key: 'manual', title: '殿が設定済みの後継元（手入力）', note: '商品の編集画面『後継元の商材』で殿が手入力したリンク（オキシ等）を仮に使ったもの。' },
   { key: 'other', title: 'その他（結び付けあり）', note: '上のどれにも当たらない、仮の結び付けのある商品。' },
@@ -3325,6 +3350,7 @@ function compareVendorSets(vendors) {
 function compareProvisionalPred(table, products) {
   const ids = new Set((products || []).map(p => p.id));
   const pred = new Map(); const source = new Map(); const systems = new Map();
+  const missing = new Map(); // 新ID → 手入力 pred の旧IDのうち、アプリ内に見つからないもの（黙って落とさず表示する）
   const add = (newId, oldId, src, sys) => {
     if (!newId || !oldId || newId === oldId || !ids.has(newId) || !ids.has(oldId)) return;
     if (!pred.has(newId)) { pred.set(newId, new Set()); source.set(newId, new Map()); systems.set(newId, new Set()); }
@@ -3341,9 +3367,12 @@ function compareProvisionalPred(table, products) {
   (products || []).forEach(p => {
     const m = p.demandMeta;
     if (!m || m.foreign || !Array.isArray(m.pred)) return;
-    m.pred.forEach(oid => add(p.id, oid, '手入力', null));
+    m.pred.forEach(oid => {
+      if (oid && oid !== p.id && !ids.has(oid) && ids.has(p.id)) { if (!missing.has(p.id)) missing.set(p.id, new Set()); missing.get(p.id).add(oid); }
+      add(p.id, oid, '手入力', null);
+    });
   });
-  return { pred, source, systems };
+  return { pred, source, systems, missing };
 }
 
 // 系譜の商品ID（本人を含む・深さ3まで・訪問済みで循環を止める）
@@ -3423,9 +3452,6 @@ function compareMonthly(events, now) {
 }
 
 // §12.4 今の推奨数。generateOrderRecommendations と同じ計算を1商品ずつ返す（DATA・orderCart には触れない）
-function compareIsTarget(p, vendors) {
-  return !(p.active === false || (vendors || []).find(v => v.id === p.vendorId)?.isActive === false);
-}
 function compareRecommend(p, vendors, orderHistory, now, monthly) {
   const vendor = (vendors || []).find(v => v.id === p.vendorId);
   const leadDays = vendor?.leadTimeDays || 7;
@@ -3453,23 +3479,26 @@ function compareNewRecommendation(p, ctx) {
   const cur = compareCurrentRecommendation(p, ctx.vendors, ctx.orderHistory, ctx.now);
   const lineage = compareLineage(p.id, ctx.predMap, COMPARE_LINEAGE_DEPTH);
   if (lineage.length < 2) { // 結び付けなし: 新方式を計算せず現行と同じ値
-    return Object.assign({ mode: 'none', lineage, items: [], events: 0, copyDropped: 0, lowFreq: false, cur }, cur);
+    return Object.assign({ mode: 'none', lineage, items: [], missingIds: ctx.missing && ctx.missing.get(p.id) ? [...ctx.missing.get(p.id)] : [], events: 0, copyDropped: 0, lowFreq: false, cur }, cur);
   }
   const lr = compareLineageRows(lineage, ctx.products, ctx.vendors, ctx.orderHistory, ctx.predMap, ctx.now);
   const mo = compareMonthly(lr.events, ctx.now);
   const lock = !!(p.demandMeta && !p.demandMeta.foreign && p.demandMeta.lock && p.demandMeta.lock.monthly);
   let mode; let monthly;
-  if (mo.insufficient) { mode = 'insufficient'; monthly = cur.monthly; }
-  else if (lock) { mode = 'locked'; monthly = cur.monthly; }
+  if (lock) { mode = 'locked'; monthly = cur.monthly; } // 殿の手入力固定を優先（発注1回以下でも『履歴不足』と出さない）
+  else if (mo.insufficient) { mode = 'insufficient'; monthly = cur.monthly; }
   else { mode = 'auto'; monthly = mo.monthly; }
   const rec = compareRecommend(p, ctx.vendors, ctx.orderHistory, ctx.now, monthly);
   const pMap = new Map((ctx.products || []).map(x => [x.id, x]));
   const vname = id => (ctx.vendors || []).find(v => v.id === id)?.name || '';
   const srcOf = id => { const s = ctx.source && ctx.source.get(p.id) && ctx.source.get(p.id).get(id); return s ? [...s] : []; };
+  const direct = ctx.predMap && ctx.predMap.get(p.id);
+  const srcAny = id => { const u = new Set(); lineage.forEach(m => { const sm = ctx.source && ctx.source.get(m) && ctx.source.get(m).get(id); if (sm) sm.forEach(v => u.add(v)); }); return [...u]; };
+  const missingIds = [...new Set([].concat(...lineage.map(m => ctx.missing && ctx.missing.get(m) ? [...ctx.missing.get(m)] : [])))];
   const items = lineage.filter(id => id !== p.id).concat([p.id]).map(id => {
     const x = pMap.get(id); const s = lr.perProduct.get(id);
     return {
-      id, role: id === p.id ? '新' : '旧', name: x ? x.name : id, vendorName: x ? vname(x.vendorId) : '', src: id === p.id ? [] : srcOf(id),
+      id, role: id === p.id ? '新' : '旧', name: x ? x.name : id, vendorName: x ? vname(x.vendorId) : '', src: id === p.id ? [] : (direct && direct.has(id) ? srcOf(id) : srcAny(id)), deep: id !== p.id && !(direct && direct.has(id)),
       qty: s ? s.qty : 0, count: s ? s.count : 0, firstMs: s ? s.firstMs : null, lastMs: s ? s.lastMs : null,
       share: !mo.insufficient && s ? s.qty / mo.denomA : 0,
       spanMonths: s ? (s.lastMs - s.firstMs) / COMPARE_MONTH_MS : 0,
@@ -3481,7 +3510,7 @@ function compareNewRecommendation(p, ctx) {
   const sinceLast = n >= 1 ? (ctx.now.getTime() - lr.events[n - 1].t) / 86400000 : null;
   const L = COMPARE_LOW_FREQ;
   const lowFreq = n < L.minEvents || (avgInterval !== null && avgInterval >= L.intervalDays) || (sinceLast !== null && sinceLast >= L.sinceLastDays) || monthly < L.monthly;
-  return Object.assign({ mode, lineage, items, events: n, avgInterval, sinceLast, copyDropped: lr.copyDropped, lowFreq, mo, cur }, rec);
+  return Object.assign({ mode, lineage, items, missingIds, events: n, avgInterval, sinceLast, copyDropped: lr.copyDropped, lowFreq, mo, cur }, rec);
 }
 
 // §12.5 根拠の文字列（画面側で esc する）。戻り値 { text, detail: [..] }（旧が4つ以上のときは detail に全部並べる）
@@ -3491,7 +3520,8 @@ function compareBasisText(nw) {
   if (nw.mode === 'insufficient') return { text: `履歴不足（発注${nw.mo.n}回）→ 今の月間消費量 月${f1(nw.cur.monthly)}本（手入力）を使用`, detail: [] };
   if (nw.mode === 'locked') return { text: `殿が手入力で固定（月${f1(nw.cur.monthly)}本）`, detail: [] };
   const tag = it => it.src.length ? `（${it.src.join('・')}）` : '';
-  const oldLine = it => `旧 ${it.name}（${it.vendorName}）月${f1(it.share)}本（${f1(it.spanMonths)}か月）${tag(it)}`;
+  const spanTxt = it => it.count >= 2 ? `${f1(it.spanMonths)}か月` : (it.count === 1 ? '1回のみ' : '発注なし');
+  const oldLine = it => `旧 ${it.name}（${it.vendorName}）月約${f1(it.share)}本（参考）（${spanTxt(it)}）${tag(it)}`; // 旧ごとの月◯本は合計の内訳の目安（足し算は合計と一致しない）
   const olds = nw.items.filter(it => it.role === '旧'); const self = nw.items.find(it => it.role === '新');
   const parts = [];
   const detail = [];
@@ -3505,7 +3535,15 @@ function compareBasisText(nw) {
   return { text, detail };
 }
 
-// §12.6 枠とタグ。row = { diff, cur, nw, linked, isToel, has5, manual }。戻り値 { bucket(key|null), tags }
+// §12.12 ① 合算した旧の商品名を、モード（auto・履歴不足・手動固定）にかかわらず1行で全部出す。旧が1つもなく見つからないIDもなければ ''。画面側で esc する。
+function compareOldsLine(nw) {
+  const olds = (nw.items || []).filter(it => it.role === '旧');
+  const parts = olds.map(it => `${it.name}（${it.vendorName}${it.src.length ? '・' + it.src.join('・') : ''}）${it.deep ? '（旧の旧）' : ''}`);
+  (nw.missingIds || []).forEach(id => parts.push(`旧が見つかりません（ID: ${id}）`));
+  return parts.length ? `合算した旧: ${parts.join('／')}` : '';
+}
+
+// §12.6 枠とタグ。row = { diff, cur, nw, linked, unlinked, isToel, has5, manual }。戻り値 { bucket(key|null), tags }
 function compareClassify(row) {
   const { cur, nw } = row;
   const diff = nw.rec - cur.rec;
@@ -3515,6 +3553,7 @@ function compareClassify(row) {
   const conds = [
     { key: 'low', ok: lowDown || floorWarn, tag: floorWarn && !lowDown ? '下限なし注意' : '低頻度で減る' },
     { key: 'big', ok: row.linked && big, tag: '差が大きい・減る' },
+    { key: 'unlinked', ok: !!row.unlinked, tag: 'つながり未設定' },
     { key: 'toel', ok: !!row.isToel, tag: 'トエル' },
     { key: 'sw5', ok: !!row.has5, tag: '⑤' },
     { key: 'manual', ok: !!row.manual, tag: '手入力リンク' },
@@ -3530,11 +3569,30 @@ function buildCompareTable(products, vendors, orderHistory, now) {
   products = products || []; vendors = vendors || []; orderHistory = orderHistory || [];
   const table = buildMappingTable(products, vendors, orderHistory, now);
   const prov = compareProvisionalPred(table, products);
-  const ctx = { products, vendors, orderHistory, predMap: prov.pred, source: prov.source, now };
+  const ctx = { products, vendors, orderHistory, predMap: prov.pred, source: prov.source, missing: prov.missing, now };
   const vOf = id => vendors.find(v => v.id === id);
+  const vs = compareVendorSets(vendors);
+  const ridMap = compareRowIdMap(products, vendors);
   const sortKeyOf = new Map();
   [].concat(table.certain, table.pending).forEach(r => { if (r.newP && r.newP.id && !sortKeyOf.has(r.newP.id)) sortKeyOf.set(r.newP.id, r.sortKey); });
-  const all = [];
+  // §12.12 ③ 対応表の行番号の照合: 商品ID → その商品に関わる対応表の行
+  const refs = new Map();
+  const addRef = (id, o) => { if (!id) return; if (!refs.has(id)) refs.set(id, []); refs.get(id).push(o); };
+  [].concat(table.certain, table.pending).forEach(r => {
+    if (r.newP && r.newP.id) addRef(r.newP.id, { rowId: r.rowId, kind: '新', judge: r.judge, reasons: r.reasons || [] });
+    (r.olds || []).forEach(o => addRef(o.id, { rowId: r.rowId, kind: '旧', judge: r.judge }));
+  });
+  (table.newOnly || []).forEach(r => { if (r.newP && r.newP.id) addRef(r.newP.id, { rowId: r.rowId, kind: '新のみ' }); });
+  (table.oldOnly || []).forEach(r => { if (r.old && r.old.id) addRef(r.old.id, { rowId: r.rowId, kind: '旧のみ' }); });
+  // 旧として使われている商品（対応表の行の旧・仮の結び付けの旧）
+  const usedAsOld = new Set();
+  [].concat(table.certain, table.pending).forEach(r => (r.olds || []).forEach(o => usedAsOld.add(o.id)));
+  prov.pred.forEach(set => set.forEach(id => usedAsOld.add(id)));
+  // 直近180日に発注のある商品
+  const recentIds = new Set();
+  const fromMs = now.getTime() - COMPARE_WINDOW_DAYS * 86400000;
+  orderHistory.forEach(h => { const t = new Date(h.date).getTime(); if (Number.isFinite(t) && t >= fromMs && t <= now.getTime()) recentIds.add(h.productId); });
+  const all = []; let oldSide = 0;
   products.forEach(p => {
     if (!compareIsTarget(p, vendors)) return;
     const vendor = vOf(p.vendorId);
@@ -3543,26 +3601,42 @@ function buildCompareTable(products, vendors, orderHistory, now) {
     const m = p.demandMeta;
     const manual = !!(m && !m.foreign && Array.isArray(m.pred) && m.pred.some(id => products.some(x => x.id === id)));
     const isToel = !!(vendor && vendor.name === 'ミツイ' && isToelProduct(p));
+    const linked = nw.lineage.length > 1;
+    const myRefs = refs.get(p.id) || [];
+    // §12.12 ② 未設定: 仮の結び付けがなく、東京でなく、旧として使われていない（トエルは全色出すので旧として使われていても対象）
+    const unlinked = !linked && !vs.tokyo.has(p.vendorId) && (isToel || !usedAsOld.has(p.id));
     const row = {
       p, vendorName: vendor ? vendor.name : '', vendorShort: vendor ? (vendor.shortName || vendor.name) : '',
-      cur, nw, diff: nw.rec - cur.rec, linked: nw.lineage.length > 1, isToel, manual,
+      cur, nw, diff: nw.rec - cur.rec, linked, unlinked, isToel, manual,
       has5: !!(prov.systems.get(p.id) && prov.systems.get(p.id).has('⑤')),
     };
+    if (!linked && !unlinked && !isToel) { oldSide++; all.push(Object.assign(row, { bucket: null, tags: [], rowId: ridMap.get(p.id) })); return; }
     const cls = compareClassify(row);
-    if (!cls.bucket) { all.push(Object.assign(row, { bucket: null, tags: [] })); return; }
     const basis = compareBasisText(nw);
     const notes = [];
     if (manual) notes.push('手入力リンク（殿が設定済み）');
     if (cls.floorWarn) notes.push('下限なし注意: 最低在庫が0で、新方式でも目標が0です。最低在庫を入れていただく候補です');
     if (nw.mode === 'auto' && nw.lowFreq) notes.push(`低頻度: 発注${nw.events}回・平均間隔${nw.avgInterval === null ? '―' : Math.round(nw.avgInterval) + '日'}・最後の発注${nw.sinceLast === null ? '―' : Math.round(nw.sinceLast) + '日前'}・月${(Math.round(nw.monthly * 10) / 10).toFixed(1)}本`);
     if (cur.recentOrder || nw.recentOrder) notes.push(`リードタイム（${cur.leadDays}日）以内に発注済みのため、推奨は今も新も0にしています（現行と同じ扱い）`);
-    const rid = `比較-${row.vendorShort}-${isToel ? getToelProductCode(p) : p.name}`;
-    all.push(Object.assign(row, { bucket: cls.bucket, tags: cls.tags, basis, notes, baseId: rid }));
+    // 対応表の行番号（新として・旧として・手入力）
+    const mapRefs = myRefs.map(r => `${r.rowId}（${r.kind === '新' ? r.judge : r.kind === '旧' ? '旧として' : r.kind === '新のみ' ? '⑤新のみ' : '旧のみ'}）`);
+    if (manual && !myRefs.some(r => r.kind === '新')) mapRefs.push('手入力リンク（殿が設定済み）');
+    // 未設定の理由
+    const unlinkedReasons = [];
+    let cardWorthy = true;
+    if (unlinked) {
+      myRefs.filter(r => r.kind === '新' && r.judge !== '確実').forEach(r => unlinkedReasons.push(`対応表で要確認: ${r.rowId}（${(r.reasons || []).join('・') || '要確認'}）`));
+      myRefs.filter(r => r.kind === '新のみ').forEach(r => unlinkedReasons.push(`対応表の⑤新のみ: ${r.rowId}`));
+      const hasTableReason = unlinkedReasons.length > 0;
+      myRefs.filter(r => r.kind === '旧のみ').forEach(r => unlinkedReasons.push(`対応表の旧のみ: ${r.rowId}`));
+      if (!unlinkedReasons.length) unlinkedReasons.push('対応表に行なし');
+      cardWorthy = hasTableReason || isToel || recentIds.has(p.id);
+    }
+    all.push(Object.assign(row, {
+      bucket: cls.bucket, tags: cls.tags, basis, notes, rowId: ridMap.get(p.id), oldsLine: compareOldsLine(nw), mapRefs,
+      unlinkedReasons, nameOnly: !!(unlinked && cls.bucket === 'unlinked' && !cardWorthy),
+    }));
   });
-  // rowId: 同じものが2つ以上できたら商品IDの順で #2 …（並びを入れ替えても変わらない）
-  const groups = new Map();
-  all.filter(r => r.bucket).forEach(r => { if (!groups.has(r.baseId)) groups.set(r.baseId, []); groups.get(r.baseId).push(r); });
-  groups.forEach(list => list.sort((a, b) => String(a.p.id) < String(b.p.id) ? -1 : String(a.p.id) > String(b.p.id) ? 1 : 0).forEach((r, i) => { r.rowId = i ? `${r.baseId}#${i + 1}` : r.baseId; }));
   const ja = (a, b) => String(a).localeCompare(String(b), 'ja');
   const byName = (a, b) => ja(a.vendorShort, b.vendorShort) || ja(a.p.name, b.p.name) || ja(a.rowId, b.rowId);
   const byDiff = (a, b) => Math.abs(b.diff) - Math.abs(a.diff) || ja(a.rowId, b.rowId);
@@ -3570,10 +3644,18 @@ function buildCompareTable(products, vendors, orderHistory, now) {
     const ka = sortKeyOf.get(a.p.id) || [4, 0, 0]; const kb = sortKeyOf.get(b.p.id) || [4, 0, 0];
     return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2] || ja(a.rowId, b.rowId);
   };
-  const sorter = { low: byDiff, big: byDiff, toel: byToel, sw5: byName, manual: byName, other: byName };
-  const buckets = COMPARE_BUCKETS.map(b => ({ key: b.key, title: b.title, note: b.note, rows: all.filter(r => r.bucket === b.key).sort(sorter[b.key]) }));
-  const shown = buckets.reduce((a, b) => a + b.rows.length, 0);
-  return { buckets, counts: { shown, noLink: all.length - shown, total: all.length, linked: all.filter(r => r.linked).length }, mappingCounts: table.counts };
+  const sorter = { low: byDiff, big: byDiff, unlinked: byName, toel: byToel, sw5: byName, manual: byName, other: byName };
+  const buckets = COMPARE_BUCKETS.map(b => {
+    const list = all.filter(r => r.bucket === b.key).sort(sorter[b.key]);
+    const rows = b.key === 'unlinked' ? list.filter(r => !r.nameOnly) : list;
+    const nameOnly = b.key === 'unlinked' ? list.filter(r => r.nameOnly) : [];
+    const toelUnlinked = all.filter(r => r.bucket === 'unlinked' && r.isToel).length;
+    const heading = b.key === 'unlinked' ? `${b.title}（カード ${rows.length}件／名前のみ ${nameOnly.length}件）`
+      : b.key === 'toel' ? `${b.title}（${rows.length}件）（未設定の色 ${toelUnlinked}件は「つながり未設定」の枠）` : `${b.title}（${rows.length}件）`;
+    return { key: b.key, title: b.title, note: b.note, heading, rows, nameOnly };
+  });
+  const shown = buckets.reduce((a, b) => a + b.rows.length + b.nameOnly.length, 0);
+  return { buckets, counts: { shown, oldSide, noLink: oldSide, total: all.length, linked: all.filter(r => r.linked).length, unlinked: all.filter(r => r.bucket === 'unlinked').length }, mappingCounts: table.counts };
 }
 // COMPARE-PURE-END
 
@@ -3591,6 +3673,11 @@ function mappingSourceLinks(keys) {
     .map(s => `<a href="${esc(s.url)}" target="_blank" rel="noopener" style="color:var(--accent-light);">${esc(s.label)}</a>`).join('・');
 }
 
+// §12.12 ③ 対応表 → 比較表の行番号（新の商品IDがある行だけ。renderMappingModal が compareRowIdMap から r.compareRowId を付ける）
+function mappingCompareRefHtml(r) {
+  return r.compareRowId ? `<div style="font-size:11px;color:var(--text-sub);margin-top:2px;">比較表: ${esc(r.compareRowId)}</div>` : '';
+}
+
 function mappingSwitchCardHtml(r) {
   const judgeColor = r.judge === '確実' ? 'var(--success)' : 'var(--warning)';
   const reasons = r.reasons.map(c => esc(MAPPING_REASON_TEXT[c] || c)).join('／');
@@ -3606,6 +3693,7 @@ function mappingSwitchCardHtml(r) {
     <div style="margin-top:4px;"><span style="color:${judgeColor};font-weight:700;">${esc(r.judge)}</span>${reasons ? '：' + reasons : ''}${basis}</div>
     ${copy}
     ${manual}
+    ${mappingCompareRefHtml(r)}
   </div>`;
 }
 
@@ -3624,6 +3712,7 @@ function mappingNewOnlyHtml(r) {
     <div><span style="display:inline-block;background:rgba(108,99,255,0.25);border-radius:8px;padding:1px 8px;font-size:12px;margin-right:6px;">${esc(r.rowId)}</span>${productNameHtml(r.newP.name)}（${esc(r.newP.vendorName)}）</div>
     <div style="margin-top:4px;color:var(--text-sub);">新 ${MAPPING_WINDOW_DAYS}日で ${r.newStats.qty}個（${r.newStats.count}回）｜${r.manualNote ? '<span style="color:var(--success);font-weight:700;">手入力リンクあり（殿が設定済み）</span>' : `<span style="color:var(--warning);font-weight:700;">要確認</span>：${esc(MAPPING_REASON_TEXT.R12)}`}</div>
     ${r.manualNote ? `<div style="font-size:11px;color:var(--warning);margin-top:2px;">注記: ${esc(r.manualNote)}</div>` : ''}
+    ${mappingCompareRefHtml(r)}
   </div>`;
 }
 
@@ -3647,6 +3736,7 @@ function mappingCardHtml(r) {
     <div style="margin-top:4px;"><span style="color:${judgeColor};font-weight:700;">${esc(r.judge)}</span>${reasons ? '：' + reasons : ''}${basis}</div>
     ${notes}
     ${r.manualNote ? `<div style="font-size:11px;color:var(--warning);margin-top:2px;">注記: ${esc(r.manualNote)}</div>` : ''}
+    ${mappingCompareRefHtml(r)}
     <div style="margin-top:4px;font-size:12px;">出典: ${mappingSourceLinks(r.sourceKeys)}</div>
   </div>`;
 }
@@ -3675,6 +3765,8 @@ function renderMappingModal() {
   const t = buildMappingTable(DATA.products, DATA.vendors, DATA.orderHistory, new Date());
   const ask = '違う行・分からない行の番号だけ将軍にお知らせください（例: ①-M/8 は違う）。お知らせがなければ「確実」はすべて OK と見なします。';
   const manual = mappingBuildManualLinks(t, DATA.products, DATA.vendors, DATA.orderHistory, new Date());
+  const cmpIds = compareRowIdMap(DATA.products, DATA.vendors); // 比較表と同じ rowId（§12.12 ③）
+  [].concat(t.certain, t.pending, t.newOnly).forEach(r => { const id = r.newP && r.newP.id && cmpIds.get(r.newP.id); if (id) r.compareRowId = id; });
   let html = `<div style="font-size:12px;color:var(--text-sub);margin-bottom:8px;">この画面では何も変わりません（見るだけ）。</div>
     <div style="font-size:14px;font-weight:700;margin-bottom:6px;">確実 ${t.counts.certain}件／要確認 ${t.counts.pending}件／旧のみ ${t.counts.oldOnly}件／⑤新のみ ${t.counts.newOnly}件／手入力リンク ${manual.count}件</div>
     <div style="font-size:13px;color:${t.counts.unresolved ? 'var(--warning)' : 'var(--text-sub)'};margin-bottom:6px;">どの系統にも解決できなかった旧商品: ${t.counts.unresolved}件（下の「旧のみ」に出しています）</div>
@@ -3744,8 +3836,11 @@ function compareCardHtml(r) {
     <div style="margin-top:4px;font-weight:700;">今 ${r.cur.rec}個 → 新 ${r.nw.rec}個 <span style="color:${diffColor};">（差 ${esc(diffTxt)}）</span></div>
     <div style="margin-top:2px;color:var(--text-sub);">目標 今 ${r.cur.target} → 新 ${r.nw.target}／在庫 ${esc(r.p.stock)}／最低在庫 ${r.cur.minStock}</div>
     <div style="margin-top:4px;">根拠: ${esc(r.basis.text)}</div>
+    ${r.oldsLine ? `<div style="font-size:12px;margin-top:2px;">${esc(r.oldsLine)}</div>` : ''}
     ${detail}
+    ${(r.unlinkedReasons || []).map(u => `<div style="font-size:12px;color:var(--warning);margin-top:2px;">つながり未設定: ${esc(u)}</div>`).join('')}
     ${notes}
+    ${r.mapRefs && r.mapRefs.length ? `<div style="font-size:11px;color:var(--text-sub);margin-top:2px;">対応表: ${esc(r.mapRefs.join('／'))}</div>` : ''}
   </div>`;
 }
 
@@ -3760,11 +3855,14 @@ function renderCompareModal() {
     <div style="font-size:12px;color:var(--text-sub);margin-bottom:8px;">${esc('違う行の番号だけ将軍にお知らせください（例: 比較-ミツイ-A/10 は違う）')}</div>
     <div style="font-size:14px;font-weight:700;margin-bottom:8px;">${esc(`表示 ${t.counts.shown}件／結び付けあり ${t.counts.linked}件`)}</div>`;
   t.buckets.forEach(b => {
-    html += `<h3 style="font-size:15px;margin:14px 0 4px;color:var(--accent-light);">${esc(b.title)}（${b.rows.length}件）</h3>`
+    html += `<h3 style="font-size:15px;margin:14px 0 4px;color:var(--accent-light);">${esc(b.heading || `${b.title}（${b.rows.length}件）`)}</h3>`
       + `<div style="font-size:12px;color:var(--text-sub);margin-bottom:4px;">${esc(b.note)}</div>`
-      + (b.rows.length ? b.rows.map(compareCardHtml).join('') : '<div style="font-size:12px;color:var(--text-sub);">なし</div>');
+      + (b.rows.length ? b.rows.map(compareCardHtml).join('') : (b.nameOnly && b.nameOnly.length ? '' : '<div style="font-size:12px;color:var(--text-sub);">なし</div>'));
+    if (b.nameOnly && b.nameOnly.length) {
+      html += `<div style="background:var(--surface2);border-radius:12px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:var(--text-sub);">${esc(`発注が180日ない未設定の商品 ${b.nameOnly.length}件:`)} ${b.nameOnly.map(r => `${productNameHtml(r.p.name)}（${esc(r.vendorName)}）`).join('、')}</div>`;
+    }
   });
-  html += `<div style="font-size:12px;color:var(--text-sub);margin-top:12px;">${esc(`結び付けのない商品 ${t.counts.noLink}件（今の計算のまま）`)}</div>`;
+  html += `<div style="font-size:12px;color:var(--text-sub);margin-top:12px;">${esc(`旧の側の商品 ${t.counts.oldSide}件（比較の対象外）`)}</div>`;
   body.innerHTML = html;
 }
 
