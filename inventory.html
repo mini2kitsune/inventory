@@ -3341,6 +3341,48 @@ const COMPARE_BUCKETS = [
   { key: 'other', title: 'その他（結び付けあり）', note: '上のどれにも当たらない、仮の結び付けのある商品。' },
 ];
 
+// 比較表から外す商材（殿ご指示 2026-11-24: 切替が無く何も変わらないため）。比較表の中だけの除外で、推奨数・他の画面には影響させない。
+// 判定は仕入先名・商品名の両方。商品名は『語の頭』に当たったときだけ（他語の一部では当てない）。表記ゆれは compareFoldName で吸収。
+// 実データで確認できた表記: ヴィラロドラ（仕入先名・data/order_history_20261102.csv）。他は殿のご指示の表記＋ブランド公式の欧文。追加が要るのはここ1か所。
+const COMPARE_EXCLUDE_RULES = [
+  { brand: 'オージュア', words: ['オージュア', 'Aujua'] },
+  { brand: 'ヴィラロドラ', words: ['ヴィラロドラ', 'Villa Lodola'] },
+  { brand: 'イーラル', words: ['イーラル'] },
+];
+const COMPARE_EXCLUDE_NOTE = 'オージュア・ヴィラロドラ・イーラル';
+// NFKC・大小文字・ひらがな→カタカナ・長音（ー）と中点（・）の除去・ヴ行→バ行・空白の圧縮
+function compareFoldName(s) {
+  let t = String(s === undefined || s === null ? '' : s).normalize('NFKC').toLowerCase();
+  t = t.replace(/[ぁ-ゖ]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
+  t = t.replace(/ヴァ/g, 'バ').replace(/ヴィ/g, 'ビ').replace(/ヴェ/g, 'ベ').replace(/ヴォ/g, 'ボ').replace(/ヴ/g, 'ブ');
+  t = t.replace(/[ー・\u30fc\uff70\u2010-\u2015\u2212]/g, '').replace(/\s+/g, ' ').trim();
+  return t;
+}
+// 語の頭で当たるか（直前が文字・数字でない）。欧文の語は直後も文字でないこと。
+function compareWordHit(hay, word) {
+  const w = compareFoldName(word); if (!w || !hay) return false;
+  const isLatin = /^[a-z0-9 ]+$/.test(w);
+  const wordChar = /[a-z0-9\u30a1-\u30fa\u3400-\u9fff]/;
+  let i = hay.indexOf(w);
+  while (i !== -1) {
+    const before = i === 0 ? '' : hay[i - 1]; const after = hay[i + w.length] || '';
+    if (!(before && wordChar.test(before)) && !(isLatin && after && /[a-z0-9]/.test(after))) return true;
+    i = hay.indexOf(w, i + 1);
+  }
+  return false;
+}
+// 外す商材か。戻り値 null または { brand, reason: '仕入先名'|'商品名', hit }
+function compareExcludeMatch(productName, vendorName) {
+  const vn = compareFoldName(vendorName); const pn = compareFoldName(productName);
+  for (const r of COMPARE_EXCLUDE_RULES) {
+    for (const w of r.words) { if (compareWordHit(vn, w)) return { brand: r.brand, reason: '仕入先名', hit: w }; }
+  }
+  for (const r of COMPARE_EXCLUDE_RULES) {
+    for (const w of r.words) { if (compareWordHit(pn, w)) return { brand: r.brand, reason: '商品名', hit: w }; }
+  }
+  return null;
+}
+
 function compareVendorSets(vendors) {
   const idsOf = f => new Set((vendors || []).filter(f).map(v => v.id));
   return { tokyo: idsOf(v => String(v.name).includes('東京理美容')), fuji: idsOf(v => String(v.name).includes('フジシン')) };
@@ -3593,9 +3635,12 @@ function buildCompareTable(products, vendors, orderHistory, now) {
   const fromMs = now.getTime() - COMPARE_WINDOW_DAYS * 86400000;
   orderHistory.forEach(h => { const t = new Date(h.date).getTime(); if (Number.isFinite(t) && t >= fromMs && t <= now.getTime()) recentIds.add(h.productId); });
   const all = []; let oldSide = 0;
+  const excluded = []; // 比較表から外した商品（rowId は全商品で採番済みの ridMap をそのまま使うので、他の商品の番号は変わらない）
   products.forEach(p => {
     if (!compareIsTarget(p, vendors)) return;
     const vendor = vOf(p.vendorId);
+    const ex = compareExcludeMatch(p.name, vendor ? vendor.name : '');
+    if (ex) { excluded.push({ p, vendorName: vendor ? vendor.name : '', brand: ex.brand, reason: ex.reason, hit: ex.hit, rowId: ridMap.get(p.id) }); return; }
     const nw = compareNewRecommendation(p, ctx);
     const cur = nw.cur;
     const m = p.demandMeta;
@@ -3655,7 +3700,7 @@ function buildCompareTable(products, vendors, orderHistory, now) {
     return { key: b.key, title: b.title, note: b.note, heading, rows, nameOnly };
   });
   const shown = buckets.reduce((a, b) => a + b.rows.length + b.nameOnly.length, 0);
-  return { buckets, counts: { shown, oldSide, noLink: oldSide, total: all.length, linked: all.filter(r => r.linked).length, unlinked: all.filter(r => r.bucket === 'unlinked').length }, mappingCounts: table.counts };
+  return { buckets, excluded, counts: { shown, oldSide, noLink: oldSide, total: all.length, excluded: excluded.length, linked: all.filter(r => r.linked).length, unlinked: all.filter(r => r.bucket === 'unlinked').length }, mappingCounts: table.counts };
 }
 // COMPARE-PURE-END
 
@@ -3853,7 +3898,10 @@ function renderCompareModal() {
       <div style="color:var(--text-sub);">新方式は、後継元（旧の商品）と本人の直近6か月の発注をまとめて、1か月に何本使っているかを出します。最後の1回はまだ使い切っていない分として除き、最後の発注から間が空いているときは少なめに見ます。発注が1回しかない商品は、今までの月間消費量を使います。</div>
       <div style="color:var(--text-sub);margin-top:4px;">目標の在庫は「3週間分」と「殿が決めた最低在庫」の多い方です。推奨数は、目標の在庫から今の在庫（新品の数）を引いた数です。</div></div>
     <div style="font-size:12px;color:var(--text-sub);margin-bottom:8px;">${esc('違う行の番号だけ将軍にお知らせください（例: 比較-ミツイ-A/10 は違う）')}</div>
-    <div style="font-size:14px;font-weight:700;margin-bottom:8px;">${esc(`表示 ${t.counts.shown}件／結び付けあり ${t.counts.linked}件`)}</div>`;
+    <div style="font-size:14px;font-weight:700;margin-bottom:8px;">${esc(`表示 ${t.counts.shown}件／結び付けあり ${t.counts.linked}件`)}</div>
+    <div style="font-size:12px;color:var(--text-sub);margin-bottom:8px;">${esc(`${COMPARE_EXCLUDE_NOTE}の商材 ${t.counts.excluded}件は切替が無いため、この比較表から外しています`)}`
+    + (t.excluded.length ? `<details style="margin-top:4px;"><summary style="cursor:pointer;">外した商品を見る</summary>${t.excluded.map(r => `<div style="padding:2px 0;">${productNameHtml(r.p.name)}（${esc(r.vendorName)}）— ${esc(`${r.brand}（${r.reason}で一致: ${r.hit}）`)}</div>`).join('')}</details>` : '')
+    + `</div>`;
   t.buckets.forEach(b => {
     html += `<h3 style="font-size:15px;margin:14px 0 4px;color:var(--accent-light);">${esc(b.heading || `${b.title}（${b.rows.length}件）`)}</h3>`
       + `<div style="font-size:12px;color:var(--text-sub);margin-bottom:4px;">${esc(b.note)}</div>`
