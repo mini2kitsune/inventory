@@ -3288,6 +3288,284 @@ function mappingBuildManualLinks(t, products, vendors, orderHistory, now) {
 }
 // MAPPING-PURE-END
 
+// ---- P2a 推奨数の比較表（試算・読み取り専用）。docs/inventory_mapping_table_proposal.md §12 ----
+// 発注・保存・同期・通知には一切触れない。既存の generateOrderRecommendations は呼ばず変えず、同じ計算の純粋関数を別に持つ。
+// COMPARE-PURE-BEGIN
+const COMPARE_WINDOW_DAYS = 180;
+const COMPARE_MONTH_MS = 30.4 * 86400000; // 設計書 §2.2: 30.4日＝1か月
+const COMPARE_LINEAGE_DEPTH = 3;
+const COMPARE_BIG_DIFF = 2; // 『差が大きい』＝推奨の差がこの個数以上（軍師提案 Q-H・殿の確認待ち。変えるのはここ1か所）。0↔1個以上の変化・減る場合は別に拾う
+const COMPARE_LOW_FREQ = { minEvents: 3, intervalDays: 45, sinceLastDays: 60, monthly: 1.0 }; // 設計書 §7 P2a-5 枠2 (b)
+const COMPARE_BUCKETS = [
+  { key: 'low', title: '切らせない低頻度の商材で減るもの（下限なし注意を含む）', note: 'たまにしか頼まないが、無いと困る商材。新方式で目標が減る／最低在庫が0のままのものを、必ず1件ずつ確かめてください。' },
+  { key: 'big', title: '差が大きい・減るもの', note: `推奨の差が${COMPARE_BIG_DIFF}個以上、推奨が0個↔1個以上に変わる、または推奨が減るもの。` },
+  { key: 'toel', title: 'トエル全色', note: '結び付けがなくても全色を出しています（結び付けのない色は今の計算のまま）。' },
+  { key: 'sw5', title: '⑤ 仕入先変更（同じ商品）', note: '対応表の⑤「確実」の結び付けを仮に使ったもの。' },
+  { key: 'manual', title: '殿が設定済みの後継元（手入力）', note: '商品の編集画面『後継元の商材』で殿が手入力したリンク（オキシ等）を仮に使ったもの。' },
+  { key: 'other', title: 'その他（結び付けあり）', note: '上のどれにも当たらない、仮の結び付けのある商品。' },
+];
+
+function compareVendorSets(vendors) {
+  const idsOf = f => new Set((vendors || []).filter(f).map(v => v.id));
+  return { tokyo: idsOf(v => String(v.name).includes('東京理美容')), fuji: idsOf(v => String(v.name).includes('フジシン')) };
+}
+
+// §12.2 仮の結び付け。戻り値 { pred: Map<新ID, Set<旧ID>>, source: Map<新ID, Map<旧ID, Set<'確実'|'手入力'>>>, systems: Map<新ID, Set<系統>> }。保存しない・demandMeta を書き換えない。
+function compareProvisionalPred(table, products) {
+  const ids = new Set((products || []).map(p => p.id));
+  const pred = new Map(); const source = new Map(); const systems = new Map();
+  const add = (newId, oldId, src, sys) => {
+    if (!newId || !oldId || newId === oldId || !ids.has(newId) || !ids.has(oldId)) return;
+    if (!pred.has(newId)) { pred.set(newId, new Set()); source.set(newId, new Map()); systems.set(newId, new Set()); }
+    pred.get(newId).add(oldId);
+    const sm = source.get(newId);
+    if (!sm.has(oldId)) sm.set(oldId, new Set());
+    sm.get(oldId).add(src);
+    if (sys) systems.get(newId).add(sys);
+  };
+  ((table && table.certain) || []).forEach(r => { // 要確認（pending）・newP.id が無い行は使わない
+    if (r.judge !== '確実' || !r.newP || !r.newP.id) return;
+    (r.olds || []).forEach(o => add(r.newP.id, o.id, '確実', r.system));
+  });
+  (products || []).forEach(p => {
+    const m = p.demandMeta;
+    if (!m || m.foreign || !Array.isArray(m.pred)) return;
+    m.pred.forEach(oid => add(p.id, oid, '手入力', null));
+  });
+  return { pred, source, systems };
+}
+
+// 系譜の商品ID（本人を含む・深さ3まで・訪問済みで循環を止める）
+function compareLineage(productId, predMap, depth) {
+  const maxDepth = depth === undefined ? COMPARE_LINEAGE_DEPTH : depth;
+  const seen = new Set([productId]); const out = [productId];
+  let frontier = [productId];
+  for (let d = 0; d < maxDepth && frontier.length; d++) {
+    const next = [];
+    frontier.forEach(id => {
+      const s = predMap && predMap.get(id);
+      if (!s) return;
+      s.forEach(o => { if (!seen.has(o)) { seen.add(o); out.push(o); next.push(o); } });
+    });
+    frontier = next;
+  }
+  return out;
+}
+
+// §12.3 履歴の下ごしらえ。系譜の行だけ → 重複の除外（名前の規則＋pred でつながった東京↔フジシンの組）→ 180日 → JST の日ごとにまとめる。
+function compareLineageRows(ids, products, vendors, orderHistory, predMap, now) {
+  const idSet = new Set(ids);
+  const nowMs = now.getTime(); const fromMs = nowMs - COMPARE_WINDOW_DAYS * 86400000;
+  const pMap = new Map((products || []).map(p => [p.id, p]));
+  const vs = compareVendorSets(vendors);
+  let rows = (orderHistory || []).filter(h => idSet.has(h.productId));
+  const rawCount = rows.length;
+  rows = dedupeCopyPairRows(rows, products, vendors); // 同じ名前の東京↔フジシンの組（既存の規則そのまま）
+  const isT = id => vs.tokyo.has(pMap.get(id)?.vendorId);
+  const isF = id => vs.fuji.has(pMap.get(id)?.vendorId);
+  const linked = (a, b) => !!((predMap && predMap.get(a) && predMap.get(a).has(b)) || (predMap && predMap.get(b) && predMap.get(b).has(a)));
+  const tIds = ids.filter(isT); const fIds = ids.filter(isF);
+  tIds.forEach(a => fIds.forEach(b => { // pred でつながった東京(a)↔フジシン(b)は名前が違っても同じ組。キー 時刻|数量|在庫 で行数の最大だけ残す（東京を優先）
+    if (a === b || !linked(a, b)) return;
+    const byKey = new Map();
+    rows.forEach(h => {
+      if (h.productId !== a && h.productId !== b) return;
+      const t = new Date(h.date).getTime();
+      if (!Number.isFinite(t)) return;
+      const k = `${t}|${Number(h.quantity) || 0}|${Number(h.stockAtOrder) || 0}`;
+      let g = byKey.get(k);
+      if (!g) { g = { a: [], b: [] }; byKey.set(k, g); }
+      (h.productId === a ? g.a : g.b).push(h);
+    });
+    const drop = new Set();
+    byKey.forEach(g => { const n = Math.min(g.a.length, g.b.length); for (let i = 0; i < n; i++) drop.add(g.b[i]); });
+    if (drop.size) rows = rows.filter(h => !drop.has(h));
+  }));
+  const per = new Map(); const days = new Map();
+  rows.forEach(h => {
+    const t = new Date(h.date).getTime();
+    if (!Number.isFinite(t) || t < fromMs || t > nowMs) return;
+    const q = Number(h.quantity) || 0;
+    const s = per.get(h.productId) || { qty: 0, count: 0, firstMs: t, lastMs: t };
+    s.qty += q; s.count += 1; s.firstMs = Math.min(s.firstMs, t); s.lastMs = Math.max(s.lastMs, t);
+    per.set(h.productId, s);
+    const key = toJSTDateKey(new Date(t));
+    const ev = days.get(key) || { day: key, t, q: 0 };
+    ev.q += q; ev.t = Math.min(ev.t, t);
+    days.set(key, ev);
+  });
+  const events = [...days.values()].sort((x, y) => x.t - y.t);
+  return { events, copyDropped: rawCount - rows.length, perProduct: per };
+}
+
+// §12.3 月間消費量。events は日付順の { t(ms), q }
+function compareMonthly(events, now) {
+  const n = events.length;
+  if (n < 2) return { insufficient: true, n };
+  const sumQ = events.reduce((a, e) => a + e.q, 0);
+  const t1 = events[0].t; const tn = events[n - 1].t;
+  const denomA = Math.max(1, (tn - t1) / COMPARE_MONTH_MS);
+  const denomB = Math.max(1, (now.getTime() - t1) / COMPARE_MONTH_MS);
+  const A = (sumQ - events[n - 1].q) / denomA;
+  const B = sumQ / denomB;
+  return { insufficient: false, n, sumQ, A, B, denomA, denomB, t1, tn, monthly: Math.round(Math.min(A, B) * 10) / 10 };
+}
+
+// §12.4 今の推奨数。generateOrderRecommendations と同じ計算を1商品ずつ返す（DATA・orderCart には触れない）
+function compareIsTarget(p, vendors) {
+  return !(p.active === false || (vendors || []).find(v => v.id === p.vendorId)?.isActive === false);
+}
+function compareRecommend(p, vendors, orderHistory, now, monthly) {
+  const vendor = (vendors || []).find(v => v.id === p.vendorId);
+  const leadDays = vendor?.leadTimeDays || 7;
+  const minStock = p.minStock || 0;
+  const seasonal = p.seasonalFactor || 1;
+  const daily = monthly * seasonal / 30;
+  const weeks = Math.ceil(daily * 21);
+  const target = Math.max(minStock, weeks);
+  const raw = target - p.stock;
+  let rec = raw > 0 ? raw : 0;
+  let recentOrder = false;
+  if (raw > 0) {
+    const cutoff = new Date(now.getTime() - leadDays * 24 * 60 * 60 * 1000);
+    recentOrder = (orderHistory || []).some(h => h.productId === p.id && new Date(h.date) >= cutoff);
+    if (recentOrder) rec = 0; // 現行と同じ: リードタイム内の直近発注で推奨を0にする
+  }
+  return { minStock, monthly, seasonal, weeks, target, stock: p.stock, raw, rec, recentOrder, leadDays };
+}
+function compareCurrentRecommendation(p, vendors, orderHistory, now) {
+  return compareRecommend(p, vendors, orderHistory, now, p.monthlyConsumption || 0);
+}
+
+// §12.3 新方式の推奨数。ctx = { products, vendors, orderHistory, predMap, source, now }
+function compareNewRecommendation(p, ctx) {
+  const cur = compareCurrentRecommendation(p, ctx.vendors, ctx.orderHistory, ctx.now);
+  const lineage = compareLineage(p.id, ctx.predMap, COMPARE_LINEAGE_DEPTH);
+  if (lineage.length < 2) { // 結び付けなし: 新方式を計算せず現行と同じ値
+    return Object.assign({ mode: 'none', lineage, items: [], events: 0, copyDropped: 0, lowFreq: false, cur }, cur);
+  }
+  const lr = compareLineageRows(lineage, ctx.products, ctx.vendors, ctx.orderHistory, ctx.predMap, ctx.now);
+  const mo = compareMonthly(lr.events, ctx.now);
+  const lock = !!(p.demandMeta && !p.demandMeta.foreign && p.demandMeta.lock && p.demandMeta.lock.monthly);
+  let mode; let monthly;
+  if (mo.insufficient) { mode = 'insufficient'; monthly = cur.monthly; }
+  else if (lock) { mode = 'locked'; monthly = cur.monthly; }
+  else { mode = 'auto'; monthly = mo.monthly; }
+  const rec = compareRecommend(p, ctx.vendors, ctx.orderHistory, ctx.now, monthly);
+  const pMap = new Map((ctx.products || []).map(x => [x.id, x]));
+  const vname = id => (ctx.vendors || []).find(v => v.id === id)?.name || '';
+  const srcOf = id => { const s = ctx.source && ctx.source.get(p.id) && ctx.source.get(p.id).get(id); return s ? [...s] : []; };
+  const items = lineage.filter(id => id !== p.id).concat([p.id]).map(id => {
+    const x = pMap.get(id); const s = lr.perProduct.get(id);
+    return {
+      id, role: id === p.id ? '新' : '旧', name: x ? x.name : id, vendorName: x ? vname(x.vendorId) : '', src: id === p.id ? [] : srcOf(id),
+      qty: s ? s.qty : 0, count: s ? s.count : 0, firstMs: s ? s.firstMs : null, lastMs: s ? s.lastMs : null,
+      share: !mo.insufficient && s ? s.qty / mo.denomA : 0,
+      spanMonths: s ? (s.lastMs - s.firstMs) / COMPARE_MONTH_MS : 0,
+      sinceMonths: s ? (ctx.now.getTime() - s.firstMs) / COMPARE_MONTH_MS : 0,
+    };
+  });
+  const n = lr.events.length;
+  const avgInterval = n >= 2 ? (lr.events[n - 1].t - lr.events[0].t) / (n - 1) / 86400000 : null;
+  const sinceLast = n >= 1 ? (ctx.now.getTime() - lr.events[n - 1].t) / 86400000 : null;
+  const L = COMPARE_LOW_FREQ;
+  const lowFreq = n < L.minEvents || (avgInterval !== null && avgInterval >= L.intervalDays) || (sinceLast !== null && sinceLast >= L.sinceLastDays) || monthly < L.monthly;
+  return Object.assign({ mode, lineage, items, events: n, avgInterval, sinceLast, copyDropped: lr.copyDropped, lowFreq, mo, cur }, rec);
+}
+
+// §12.5 根拠の文字列（画面側で esc する）。戻り値 { text, detail: [..] }（旧が4つ以上のときは detail に全部並べる）
+function compareBasisText(nw) {
+  const f1 = x => (Math.round(x * 10) / 10).toFixed(1);
+  if (nw.mode === 'none') return { text: '結び付けなし（今の計算のまま）', detail: [] };
+  if (nw.mode === 'insufficient') return { text: `履歴不足（発注${nw.mo.n}回）→ 今の月間消費量 月${f1(nw.cur.monthly)}本（手入力）を使用`, detail: [] };
+  if (nw.mode === 'locked') return { text: `殿が手入力で固定（月${f1(nw.cur.monthly)}本）`, detail: [] };
+  const tag = it => it.src.length ? `（${it.src.join('・')}）` : '';
+  const oldLine = it => `旧 ${it.name}（${it.vendorName}）月${f1(it.share)}本（${f1(it.spanMonths)}か月）${tag(it)}`;
+  const olds = nw.items.filter(it => it.role === '旧'); const self = nw.items.find(it => it.role === '新');
+  const parts = [];
+  const detail = [];
+  if (olds.length <= 3) olds.forEach(it => parts.push(oldLine(it)));
+  else { parts.push(`旧${olds.length}商材 合計 月${f1(olds.reduce((a, it) => a + it.share, 0))}本`); olds.forEach(it => detail.push(oldLine(it))); }
+  parts.push(self && self.count ? `新 ${self.name} ${f1(self.sinceMonths)}か月分` : `新 ${self ? self.name : ''} 発注なし`);
+  let text = parts.join('＋') + ` → 合計 月${f1(nw.monthly)}本` + (nw.seasonal !== 1 ? `・季節×${nw.seasonal}` : '')
+    + ` → 3週間分 ${nw.weeks}本・最低在庫 ${nw.minStock} → 目標 ${nw.target}`;
+  if (nw.minStock > 0 && nw.minStock > nw.weeks) text += `・最低在庫 ${nw.minStock} で下支え`;
+  if (nw.copyDropped > 0) text += `・フジシンへの複製分 ${nw.copyDropped}件は1回だけ数えた`;
+  return { text, detail };
+}
+
+// §12.6 枠とタグ。row = { diff, cur, nw, linked, isToel, has5, manual }。戻り値 { bucket(key|null), tags }
+function compareClassify(row) {
+  const { cur, nw } = row;
+  const diff = nw.rec - cur.rec;
+  const floorWarn = (row.linked || row.isToel) && cur.minStock === 0 && nw.target === 0; // 下限なし注意
+  const lowDown = row.linked && nw.lowFreq && nw.target < cur.target;
+  const big = Math.abs(diff) >= COMPARE_BIG_DIFF || ((cur.rec === 0) !== (nw.rec === 0)) || nw.rec < cur.rec;
+  const conds = [
+    { key: 'low', ok: lowDown || floorWarn, tag: floorWarn && !lowDown ? '下限なし注意' : '低頻度で減る' },
+    { key: 'big', ok: row.linked && big, tag: '差が大きい・減る' },
+    { key: 'toel', ok: !!row.isToel, tag: 'トエル' },
+    { key: 'sw5', ok: !!row.has5, tag: '⑤' },
+    { key: 'manual', ok: !!row.manual, tag: '手入力リンク' },
+    { key: 'other', ok: !!row.linked, tag: '' },
+  ];
+  const first = conds.find(c => c.ok);
+  if (!first) return { bucket: null, tags: [] };
+  return { bucket: first.key, tags: conds.filter(c => c.ok && c !== first && c.tag).map(c => c.tag), floorWarn, lowDown, big };
+}
+
+// 表全体。buildMappingTable を1回だけ呼ぶ（読むだけ）。DATA・orderCart・demandMeta は書き換えない。
+function buildCompareTable(products, vendors, orderHistory, now) {
+  products = products || []; vendors = vendors || []; orderHistory = orderHistory || [];
+  const table = buildMappingTable(products, vendors, orderHistory, now);
+  const prov = compareProvisionalPred(table, products);
+  const ctx = { products, vendors, orderHistory, predMap: prov.pred, source: prov.source, now };
+  const vOf = id => vendors.find(v => v.id === id);
+  const sortKeyOf = new Map();
+  [].concat(table.certain, table.pending).forEach(r => { if (r.newP && r.newP.id && !sortKeyOf.has(r.newP.id)) sortKeyOf.set(r.newP.id, r.sortKey); });
+  const all = [];
+  products.forEach(p => {
+    if (!compareIsTarget(p, vendors)) return;
+    const vendor = vOf(p.vendorId);
+    const nw = compareNewRecommendation(p, ctx);
+    const cur = nw.cur;
+    const m = p.demandMeta;
+    const manual = !!(m && !m.foreign && Array.isArray(m.pred) && m.pred.some(id => products.some(x => x.id === id)));
+    const isToel = !!(vendor && vendor.name === 'ミツイ' && isToelProduct(p));
+    const row = {
+      p, vendorName: vendor ? vendor.name : '', vendorShort: vendor ? (vendor.shortName || vendor.name) : '',
+      cur, nw, diff: nw.rec - cur.rec, linked: nw.lineage.length > 1, isToel, manual,
+      has5: !!(prov.systems.get(p.id) && prov.systems.get(p.id).has('⑤')),
+    };
+    const cls = compareClassify(row);
+    if (!cls.bucket) { all.push(Object.assign(row, { bucket: null, tags: [] })); return; }
+    const basis = compareBasisText(nw);
+    const notes = [];
+    if (manual) notes.push('手入力リンク（殿が設定済み）');
+    if (cls.floorWarn) notes.push('下限なし注意: 最低在庫が0で、新方式でも目標が0です。最低在庫を入れていただく候補です');
+    if (nw.mode === 'auto' && nw.lowFreq) notes.push(`低頻度: 発注${nw.events}回・平均間隔${nw.avgInterval === null ? '―' : Math.round(nw.avgInterval) + '日'}・最後の発注${nw.sinceLast === null ? '―' : Math.round(nw.sinceLast) + '日前'}・月${(Math.round(nw.monthly * 10) / 10).toFixed(1)}本`);
+    if (cur.recentOrder || nw.recentOrder) notes.push(`リードタイム（${cur.leadDays}日）以内に発注済みのため、推奨は今も新も0にしています（現行と同じ扱い）`);
+    const rid = `比較-${row.vendorShort}-${isToel ? getToelProductCode(p) : p.name}`;
+    all.push(Object.assign(row, { bucket: cls.bucket, tags: cls.tags, basis, notes, baseId: rid }));
+  });
+  // rowId: 同じものが2つ以上できたら商品IDの順で #2 …（並びを入れ替えても変わらない）
+  const groups = new Map();
+  all.filter(r => r.bucket).forEach(r => { if (!groups.has(r.baseId)) groups.set(r.baseId, []); groups.get(r.baseId).push(r); });
+  groups.forEach(list => list.sort((a, b) => String(a.p.id) < String(b.p.id) ? -1 : String(a.p.id) > String(b.p.id) ? 1 : 0).forEach((r, i) => { r.rowId = i ? `${r.baseId}#${i + 1}` : r.baseId; }));
+  const ja = (a, b) => String(a).localeCompare(String(b), 'ja');
+  const byName = (a, b) => ja(a.vendorShort, b.vendorShort) || ja(a.p.name, b.p.name) || ja(a.rowId, b.rowId);
+  const byDiff = (a, b) => Math.abs(b.diff) - Math.abs(a.diff) || ja(a.rowId, b.rowId);
+  const byToel = (a, b) => {
+    const ka = sortKeyOf.get(a.p.id) || [4, 0, 0]; const kb = sortKeyOf.get(b.p.id) || [4, 0, 0];
+    return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2] || ja(a.rowId, b.rowId);
+  };
+  const sorter = { low: byDiff, big: byDiff, toel: byToel, sw5: byName, manual: byName, other: byName };
+  const buckets = COMPARE_BUCKETS.map(b => ({ key: b.key, title: b.title, note: b.note, rows: all.filter(r => r.bucket === b.key).sort(sorter[b.key]) }));
+  const shown = buckets.reduce((a, b) => a + b.rows.length, 0);
+  return { buckets, counts: { shown, noLink: all.length - shown, total: all.length, linked: all.filter(r => r.linked).length }, mappingCounts: table.counts };
+}
+// COMPARE-PURE-END
+
 // 描画（HTML 文字列を作って #mappingBody に入れるだけ。DATA は読むだけで書かない）
 function mappingStatsText(oldStats, newStats) {
   const o = oldStats || { lastDate: null, count: 0, qty: 0 };
