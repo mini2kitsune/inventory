@@ -964,7 +964,11 @@ function updateSyncDisplay() {
   }
 }
 
+let syncRunning = false, syncAgain = false; // 二重実行防止（走行中の呼び出しは終了後に1回だけ再実行）
 async function processSyncQueue() {
+  if (syncRunning) { syncAgain = true; return; }
+  syncRunning = true;
+  try {
   if (!sbClient || !isOnline) return;
   const q = getSyncQueue();
   if (q.length === 0) return;
@@ -1098,10 +1102,17 @@ async function processSyncQueue() {
     }
     if (!ok) remaining.push(op);
   }
-  saveSyncQueue(remaining);
+  // 送信中に足された op を消さない（開始時のキューに無かった分を残す）
+  const startKeys = new Set(q.map(o => JSON.stringify(o)));
+  const added = getSyncQueue().filter(o => !startKeys.has(JSON.stringify(o)));
+  saveSyncQueue(remaining.concat(added));
   if (remaining.length < q.length) {
     lastSyncTime = new Date();
     updateSyncDisplay();
+  }
+  } finally {
+    syncRunning = false;
+    if (syncAgain) { syncAgain = false; processSyncQueue(); }
   }
 }
 
@@ -4392,6 +4403,7 @@ async function saveManualHistory() {
   let newEntries = [];
   let queueBefore = null;
   let pushed = false;
+  let committed = false; // 保存確定後（以降の例外は「保存は成功」扱い）
   const rollback = () => {
     const ids = new Set(newEntries.map(e => e.id));
     DATA.orderHistory = DATA.orderHistory.filter(h => !ids.has(h.id));
@@ -4443,6 +4455,7 @@ async function saveManualHistory() {
     return;
   }
   pushed = false; // 保存確定。以降の例外では巻き戻さない
+  committed = true;
   manualHistoryItems = {};
   closeModal('addHistory');
   document.querySelector('#modal-addHistory .modal').scrollTop = 0;
@@ -4453,14 +4466,19 @@ async function saveManualHistory() {
   await processSyncQueue();
   } catch (e) {
     console.error('saveManualHistory', e);
-    if (pushed) {
-      try {
-        rollback();
-        saveData(DATA);
-        if (queueBefore) saveSyncQueue(queueBefore);
-      } catch (e2) { console.error('saveManualHistory rollback', e2); }
+    const msg = (e && e.message ? e.message : e);
+    if (committed) {
+      showToast('履歴は保存しました（画面の更新でエラー: ' + msg + '）。もう一度入力しないでください', 4500);
+    } else {
+      if (pushed) {
+        try {
+          rollback();
+          saveData(DATA);
+          if (queueBefore) saveSyncQueue(queueBefore);
+        } catch (e2) { console.error('saveManualHistory rollback', e2); }
+      }
+      showToast('保存できませんでした（' + msg + '）。もう一度お試しください', 4500);
     }
-    showToast('保存中にエラーが出ました（' + (e && e.message ? e.message : e) + '）', 4500);
   } finally {
     manualHistorySaving = false;
   }
