@@ -556,6 +556,7 @@
         <button onclick="addEditPred()" style="padding:8px 12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:10px;color:var(--accent-light);font-size:13px;font-weight:600;cursor:pointer;">この商材を後継元にする</button>
       </div>
       <a href="#mapping" onclick="openMappingModal();return false;" style="display:inline-block;margin-top:8px;font-size:12px;color:var(--accent-light);">旧→新 対応表を見る</a>
+      <a href="#compare" onclick="openCompareModal();return false;" style="display:inline-block;margin-top:8px;margin-left:12px;font-size:12px;color:var(--accent-light);">推奨数の比較表を見る</a>
     </div>
     <button class="action-btn" onclick="saveProductEdit()" style="margin-top:8px">保存</button>
     <button onclick="duplicateProduct()" style="width:100%;margin-top:12px;padding:12px;background:var(--surface2);border:1.5px solid rgba(108,99,255,0.3);border-radius:12px;color:var(--accent-light);font-size:14px;font-weight:600;cursor:pointer;">複製して追加</button>
@@ -788,6 +789,14 @@
   <div class="modal">
     <h2>旧→新 対応表（確認用） <button class="modal-close" onclick="closeMappingModal()">&times;</button></h2>
     <div id="mappingBody"></div>
+  </div>
+</div>
+
+<!-- 推奨数の比較表（試算・読み取り専用。対応表より後ろに置き、重ねたとき上に出る） -->
+<div class="modal-overlay" id="modal-compare">
+  <div class="modal">
+    <h2>推奨数の比較表（試算） <button class="modal-close" onclick="closeCompareModal()">&times;</button></h2>
+    <div id="compareBody"></div>
   </div>
 </div>
 
@@ -1522,6 +1531,7 @@ async function init() {
     setupRealtime();
     render();
     maybeOpenMappingFromHash();
+    maybeOpenCompareFromHash();
   } else {
     showLoginForm();
   }
@@ -1543,6 +1553,7 @@ async function init() {
       persistCurrentVendorId();
       render();
       maybeOpenMappingFromHash();
+      maybeOpenCompareFromHash();
     } else if (event === 'SIGNED_OUT') {
       currentUser = null;
       DATA = getDefaultData();
@@ -3667,7 +3678,8 @@ function renderMappingModal() {
   let html = `<div style="font-size:12px;color:var(--text-sub);margin-bottom:8px;">この画面では何も変わりません（見るだけ）。</div>
     <div style="font-size:14px;font-weight:700;margin-bottom:6px;">確実 ${t.counts.certain}件／要確認 ${t.counts.pending}件／旧のみ ${t.counts.oldOnly}件／⑤新のみ ${t.counts.newOnly}件／手入力リンク ${manual.count}件</div>
     <div style="font-size:13px;color:${t.counts.unresolved ? 'var(--warning)' : 'var(--text-sub)'};margin-bottom:6px;">どの系統にも解決できなかった旧商品: ${t.counts.unresolved}件（下の「旧のみ」に出しています）</div>
-    <div style="font-size:12px;color:var(--text-sub);margin-bottom:12px;">${esc(ask)}</div>`;
+    <div style="font-size:12px;color:var(--text-sub);margin-bottom:8px;">${esc(ask)}</div>
+    <a href="#compare" onclick="openCompareModal();return false;" style="display:inline-block;margin-bottom:12px;font-size:13px;color:var(--accent-light);">推奨数の比較表（試算）を見る</a>`;
 
   html += `<h3 style="font-size:15px;margin:12px 0 6px;color:var(--accent-light);">殿が設定済みの後継元（手入力）（${manual.count}件）</h3>`
     + `<div style="font-size:12px;color:var(--text-sub);margin-bottom:4px;">商品の編集画面『後継元の商材』で殿が手入力したリンク。推奨数は新方式への切替後に使われます。一括結び付けでは上書きせず合流します。</div>`
@@ -3718,6 +3730,60 @@ function maybeOpenMappingFromHash() {
   if (location.hash === '#mapping' && currentUser) openMappingModal();
 }
 window.addEventListener('hashchange', maybeOpenMappingFromHash);
+
+// ---- 推奨数の比較表（試算）の描画。HTML を作って #compareBody に入れるだけ。DATA は読むだけで書かない ----
+function compareCardHtml(r) {
+  const neg = r.diff < 0;
+  const diffTxt = r.diff > 0 ? `+${r.diff}` : String(r.diff);
+  const diffColor = neg ? 'var(--warning)' : (r.diff > 0 ? 'var(--success)' : 'var(--text-sub)');
+  const tags = r.tags.map(t => `<span style="display:inline-block;background:rgba(255,255,255,0.08);border-radius:8px;padding:1px 7px;font-size:11px;margin-left:4px;">［${esc(t)}］</span>`).join('');
+  const notes = r.notes.map(n => `<div style="font-size:11px;color:var(--warning);margin-top:2px;">注記: ${esc(n)}</div>`).join('');
+  const detail = r.basis.detail.length ? `<div style="font-size:11px;color:var(--text-sub);margin-top:2px;">${r.basis.detail.map(d => `<div>・${esc(d)}</div>`).join('')}</div>` : '';
+  return `<div style="background:var(--surface2);border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
+    <div><span style="display:inline-block;background:rgba(108,99,255,0.25);border-radius:8px;padding:1px 8px;font-size:12px;margin-right:6px;">${esc(r.rowId)}</span>${productNameHtml(r.p.name)}（${esc(r.vendorName)}）${tags}</div>
+    <div style="margin-top:4px;font-weight:700;">今 ${r.cur.rec}個 → 新 ${r.nw.rec}個 <span style="color:${diffColor};">（差 ${esc(diffTxt)}）</span></div>
+    <div style="margin-top:2px;color:var(--text-sub);">目標 今 ${r.cur.target} → 新 ${r.nw.target}／在庫 ${esc(r.p.stock)}／最低在庫 ${r.cur.minStock}</div>
+    <div style="margin-top:4px;">根拠: ${esc(r.basis.text)}</div>
+    ${detail}
+    ${notes}
+  </div>`;
+}
+
+function renderCompareModal() {
+  const body = document.getElementById('compareBody');
+  if (!body) return;
+  const t = buildCompareTable(DATA.products, DATA.vendors, DATA.orderHistory, new Date());
+  let html = `<div style="background:rgba(255,193,7,0.12);border:1px solid var(--warning);border-radius:12px;padding:10px 12px;margin-bottom:10px;font-size:14px;font-weight:700;">これは試算です。発注には使われません。今の推奨数は変わりません。</div>
+    <div style="font-size:13px;margin-bottom:8px;"><div style="font-weight:700;">計算のしかた</div>
+      <div style="color:var(--text-sub);">新方式は、後継元（旧の商品）と本人の直近6か月の発注をまとめて、1か月に何本使っているかを出します。最後の1回はまだ使い切っていない分として除き、最後の発注から間が空いているときは少なめに見ます。発注が1回しかない商品は、今までの月間消費量を使います。</div>
+      <div style="color:var(--text-sub);margin-top:4px;">目標の在庫は「3週間分」と「殿が決めた最低在庫」の多い方です。推奨数は、目標の在庫から今の在庫（新品の数）を引いた数です。</div></div>
+    <div style="font-size:12px;color:var(--text-sub);margin-bottom:8px;">${esc('違う行の番号だけ将軍にお知らせください（例: 比較-ミツイ-A/10 は違う）')}</div>
+    <div style="font-size:14px;font-weight:700;margin-bottom:8px;">${esc(`表示 ${t.counts.shown}件／結び付けあり ${t.counts.linked}件`)}</div>`;
+  t.buckets.forEach(b => {
+    html += `<h3 style="font-size:15px;margin:14px 0 4px;color:var(--accent-light);">${esc(b.title)}（${b.rows.length}件）</h3>`
+      + `<div style="font-size:12px;color:var(--text-sub);margin-bottom:4px;">${esc(b.note)}</div>`
+      + (b.rows.length ? b.rows.map(compareCardHtml).join('') : '<div style="font-size:12px;color:var(--text-sub);">なし</div>');
+  });
+  html += `<div style="font-size:12px;color:var(--text-sub);margin-top:12px;">${esc(`結び付けのない商品 ${t.counts.noLink}件（今の計算のまま）`)}</div>`;
+  body.innerHTML = html;
+}
+
+function openCompareModal() {
+  renderCompareModal();
+  document.getElementById('modal-compare').classList.add('show');
+}
+
+function closeCompareModal() {
+  document.getElementById('modal-compare').classList.remove('show');
+  try {
+    if (location.hash === '#compare') history.replaceState(null, '', location.pathname + location.search);
+  } catch (e) { /* 無視 */ }
+}
+
+function maybeOpenCompareFromHash() {
+  if (location.hash === '#compare' && currentUser) openCompareModal();
+}
+window.addEventListener('hashchange', maybeOpenCompareFromHash);
 
 async function seedBlankToelReferenceValues() {
   if (!sbClient) return 0;
@@ -4719,6 +4785,7 @@ function closeModal(name) {
 }
 
 document.getElementById('modal-mapping').addEventListener('click', e => { if (e.target.id === 'modal-mapping') closeMappingModal(); });
+document.getElementById('modal-compare').addEventListener('click', e => { if (e.target.id === 'modal-compare') closeCompareModal(); });
 
 // Close modal on overlay click
 document.querySelectorAll('.modal-overlay').forEach(overlay => {
