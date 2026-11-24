@@ -3240,6 +3240,43 @@ function buildMappingTable(products, vendors, orderHistory, now) {
     counts: { certain: certain.length, pending: pending.length, oldOnly: oldOnly.length, newOnly: newOnly5.length, unresolved: oldOnly.filter(r => r.unresolved).length },
   };
 }
+// ---- 殿が手入力した後継元リンク（product.demandMeta.pred）の表示用（読み取り専用）----
+// 一括結び付けは既存の pred に合流（和集合・重複排除）・手入力リンクは上書きしない
+// foreign（_demand の目印なし）の商品は parseDemandMeta の結果どおりリンクとして数えない。
+function mappingBuildManualLinks(t, products, vendors, orderHistory, now) {
+  products = products || []; vendors = vendors || [];
+  const hist = dedupeCopyPairInfo(orderHistory || [], products, vendors).rows; // 重複排除は既存規則どおり
+  const vname = id => vendors.find(v => v.id === id)?.name || '';
+  const byId = new Map(products.map(p => [p.id, p]));
+  const links = [];
+  const predOf = new Map();
+  products.forEach(p => {
+    const m = p.demandMeta;
+    if (!m || m.foreign || !Array.isArray(m.pred) || !m.pred.length) return;
+    const olds = m.pred.map(id => {
+      const o = byId.get(id);
+      return o ? { id, found: true, name: o.name, vendorName: vname(o.vendorId), active: o.active !== false, stats: mappingHistoryStats([id], hist, now) } : { id, found: false };
+    });
+    predOf.set(p.id, m.pred.slice());
+    links.push({ newP: { id: p.id, name: p.name, vendorName: vname(p.vendorId) }, olds });
+  });
+  // 各系統の行（①〜⑤・⑤新のみ）に出る新が手入力リンクを持つ場合の注記を付ける。自動候補との差は和集合で示す。
+  const annotate = r => {
+    const pred = r.newP && r.newP.id ? predOf.get(r.newP.id) : null;
+    if (!pred) return;
+    const autoIds = (r.olds || []).map(o => o.id);
+    const nameOf = id => byId.get(id)?.name || `旧が見つかりません（ID: ${id}）`;
+    const onlyPred = pred.filter(id => !autoIds.includes(id));
+    const onlyAuto = autoIds.filter(id => !pred.includes(id));
+    let note = `この商品は殿が手入力でリンク設定済み（${pred.map(nameOf).join('・')}）。一括結び付けでは上書きせず合流します`;
+    if (onlyPred.length) note += `。手入力にだけある旧: ${onlyPred.map(nameOf).join('・')}`;
+    if (onlyAuto.length) note += `。自動候補にだけある旧: ${onlyAuto.map(nameOf).join('・')}`;
+    if (onlyPred.length || onlyAuto.length) note += '（合流＝和集合・重複は1つ）';
+    r.manualNote = note;
+  };
+  [].concat(t.certain, t.pending, t.newOnly).forEach(annotate);
+  return { links, count: links.length };
+}
 // MAPPING-PURE-END
 
 // 描画（HTML 文字列を作って #mappingBody に入れるだけ。DATA は読むだけで書かない）
@@ -3261,6 +3298,7 @@ function mappingSwitchCardHtml(r) {
   const reasons = r.reasons.map(c => esc(MAPPING_REASON_TEXT[c] || c)).join('／');
   const basis = r.basis ? ` 根拠: ${esc(r.basis)}` : '';
   const olds = r.olds.map(o => `<div style="margin:2px 0 0 8px;">← 旧: ${esc(o.name)}（${esc(o.vendorName)}）${o.active ? '' : '（非表示）'}</div>`).join('');
+  const manual = r.manualNote ? `<div style="font-size:11px;color:var(--warning);margin-top:2px;">注記: ${esc(r.manualNote)}</div>` : '';
   const copy = r.copyDropped5 > 0 ? `<div style="font-size:11px;color:var(--text-sub);margin-top:2px;">注記: フジシンへの履歴コピー済み（${r.copyDropped5}件）。1回だけ数えます</div>` : '';
   return `<div style="background:var(--surface2);border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
     <div><span style="display:inline-block;background:rgba(108,99,255,0.25);border-radius:8px;padding:1px 8px;font-size:12px;margin-right:6px;">${esc(r.rowId)}</span>${productNameHtml(r.newP.name)}（仕入先: ${esc(r.newP.vendorName)}）</div>
@@ -3269,6 +3307,17 @@ function mappingSwitchCardHtml(r) {
     <div style="margin-top:4px;color:var(--text-sub);">${esc(mappingStatsText(r.oldStats, r.newStats))}</div>
     <div style="margin-top:4px;"><span style="color:${judgeColor};font-weight:700;">${esc(r.judge)}</span>${reasons ? '：' + reasons : ''}${basis}</div>
     ${copy}
+    ${manual}
+  </div>`;
+}
+
+function mappingManualLinkHtml(l) {
+  const olds = l.olds.map(o => o.found
+    ? `<div style="margin:2px 0 0 8px;">← 旧: ${esc(o.name)}（${esc(o.vendorName)}）${o.active ? '' : '（非表示）'}<span style="color:var(--text-sub);font-size:12px;">　${esc(mappingStatsText(o.stats, null))}</span></div>`
+    : `<div style="margin:2px 0 0 8px;color:var(--warning);">← 旧が見つかりません（ID: ${esc(o.id)}）</div>`).join('');
+  return `<div style="background:var(--surface2);border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
+    <div>${productNameHtml(l.newP.name)}（仕入先: ${esc(l.newP.vendorName)}）<span style="display:inline-block;background:rgba(108,99,255,0.25);border-radius:8px;padding:1px 8px;font-size:12px;margin-left:6px;">手入力リンク（殿が設定済み）</span></div>
+    <div style="margin-top:4px;">${olds}</div>
   </div>`;
 }
 
@@ -3298,6 +3347,7 @@ function mappingCardHtml(r) {
     ${totalLine}
     <div style="margin-top:4px;"><span style="color:${judgeColor};font-weight:700;">${esc(r.judge)}</span>${reasons ? '：' + reasons : ''}${basis}</div>
     ${notes}
+    ${r.manualNote ? `<div style="font-size:11px;color:var(--warning);margin-top:2px;">注記: ${esc(r.manualNote)}</div>` : ''}
     <div style="margin-top:4px;font-size:12px;">出典: ${mappingSourceLinks(r.sourceKeys)}</div>
   </div>`;
 }
@@ -3324,11 +3374,15 @@ function renderMappingModal() {
   if (!body) return;
   const t = buildMappingTable(DATA.products, DATA.vendors, DATA.orderHistory, new Date());
   const ask = '違う行・分からない行の番号だけ将軍にお知らせください（例: ①-M/8 は違う）。お知らせがなければ「確実」はすべて OK と見なします。';
+  const manual = mappingBuildManualLinks(t, DATA.products, DATA.vendors, DATA.orderHistory, new Date());
   let html = `<div style="font-size:12px;color:var(--text-sub);margin-bottom:8px;">この画面では何も変わりません（見るだけ）。</div>
-    <div style="font-size:14px;font-weight:700;margin-bottom:6px;">確実 ${t.counts.certain}件／要確認 ${t.counts.pending}件／旧のみ ${t.counts.oldOnly}件／⑤新のみ ${t.counts.newOnly}件</div>
+    <div style="font-size:14px;font-weight:700;margin-bottom:6px;">確実 ${t.counts.certain}件／要確認 ${t.counts.pending}件／旧のみ ${t.counts.oldOnly}件／⑤新のみ ${t.counts.newOnly}件／手入力リンク ${manual.count}件</div>
     <div style="font-size:13px;color:${t.counts.unresolved ? 'var(--warning)' : 'var(--text-sub)'};margin-bottom:6px;">どの系統にも解決できなかった旧商品: ${t.counts.unresolved}件（下の「旧のみ」に出しています）</div>
     <div style="font-size:12px;color:var(--text-sub);margin-bottom:12px;">${esc(ask)}</div>`;
 
+  html += `<h3 style="font-size:15px;margin:12px 0 6px;color:var(--accent-light);">殿が設定済みの後継元（手入力）（${manual.count}件）</h3>`
+    + `<div style="font-size:12px;color:var(--text-sub);margin-bottom:4px;">商品の編集画面『後継元の商材』で殿が手入力したリンク。推奨数は新方式への切替後に使われます。一括結び付けでは上書きせず合流します。</div>`
+    + (manual.links.length ? manual.links.map(mappingManualLinkHtml).join('') : '<div style="font-size:12px;color:var(--text-sub);">なし</div>');
   html += `<h3 style="font-size:15px;margin:12px 0 6px;color:var(--success);">確実（${t.counts.certain}件）</h3>`;
   MAPPING_SYSTEM_ORDER.forEach(sys => {
     const list = t.certain.filter(r => r.system === sys);
