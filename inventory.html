@@ -587,7 +587,9 @@
       <label class="form-label">商品（複数選択可）</label>
       <div id="histProductList" style="flex:1;overflow-y:auto;overflow-x:hidden;touch-action:pan-y;"></div>
     </div>
-    <button class="action-btn" onclick="saveManualHistory()" style="margin-top:8px">履歴に追加</button>
+    <div style="position:sticky;bottom:0;margin:8px -20px -20px;padding:8px 20px calc(12px + env(safe-area-inset-bottom));background:var(--surface);">
+      <button class="action-btn" id="histSaveBtn" onclick="saveManualHistory()">履歴に追加</button>
+    </div>
   </div>
 </div>
 
@@ -828,8 +830,16 @@ function loadDataFromCache() {
   return null;
 }
 
+// 戻り値: 保存成功=true / 失敗(容量超過等)=false。失敗時は既存の localStorage キーに一切触れず、トーストで知らせるのみ。
 function saveData(data) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    return true;
+  } catch(e) {
+    console.error('saveData failed', e);
+    showToast('端末の保存領域が不足しています。保存できませんでした', 3500);
+    return false;
+  }
 }
 
 function getDefaultData() {
@@ -884,7 +894,14 @@ function getSyncQueue() {
 }
 
 function saveSyncQueue(q) {
-  localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(q));
+  try {
+    localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(q));
+    return true;
+  } catch(e) {
+    console.error('saveSyncQueue failed', e);
+    showToast('端末の保存領域が不足しています。同期待ちを保存できませんでした', 3500);
+    return false;
+  }
 }
 
 // ---- 後継元リンク（旧商材→新商材）メタ。products.importance 列(text, 未使用)を流用して JSON を保存する ----
@@ -922,7 +939,7 @@ function hasDemandLinkOrLock(product) {
 function enqueueSync(op) {
   const q = getSyncQueue();
   q.push(op);
-  saveSyncQueue(q);
+  return saveSyncQueue(q);
 }
 
 function enqueueOrderHistory(entry) {
@@ -930,7 +947,7 @@ function enqueueOrderHistory(entry) {
     const r = Math.random() * 16 | 0;
     return (c === 'x' ? r : (r & 3 | 8)).toString(16);
   });
-  enqueueSync({ type: 'insert_order_history', localId: entry.id, remoteId,
+  return enqueueSync({ type: 'insert_order_history', localId: entry.id, remoteId,
     productId: entry.productId, vendorId: entry.vendorId, orderDate: entry.date,
     quantity: entry.quantity, stockAtOrder: entry.stockAtOrder });
 }
@@ -4367,10 +4384,14 @@ function changeManualQty(productId, delta) {
   if (el) el.textContent = newVal;
 }
 
+let manualHistorySaving = false; // 二重タップ防止
 async function saveManualHistory() {
+  if (manualHistorySaving) return;
+  manualHistorySaving = true;
+  try {
   const entries = Object.entries(manualHistoryItems).filter(([,q]) => q > 0);
   if (entries.length === 0) {
-    showToast('数量を入力してください');
+    showToast('数量を入力してください', 3000);
     return;
   }
 
@@ -4396,9 +4417,23 @@ async function saveManualHistory() {
   });
 
   // Add to local DATA (simple, no merge)
+  // 保存失敗時は push 済みの新規要素だけを巻き戻す（既存履歴・他の localStorage キーには触れない）
+  const queueBefore = getSyncQueue();
+  const rollback = () => {
+    const ids = new Set(newEntries.map(e => e.id));
+    DATA.orderHistory = DATA.orderHistory.filter(h => !ids.has(h.id));
+  };
   newEntries.forEach(entry => DATA.orderHistory.push(entry));
-  newEntries.forEach(enqueueOrderHistory);
-  saveData(DATA);
+  if (!saveData(DATA)) {
+    rollback();
+    return;
+  }
+  if (!newEntries.every(enqueueOrderHistory)) {
+    rollback();
+    saveData(DATA);
+    saveSyncQueue(queueBefore);
+    return;
+  }
   manualHistoryItems = {};
   closeModal('addHistory');
   document.querySelector('#modal-addHistory .modal').scrollTop = 0;
@@ -4406,6 +4441,9 @@ async function saveManualHistory() {
   render();
 
   await processSyncQueue();
+  } finally {
+    manualHistorySaving = false;
+  }
 }
 
 function changeCartQty(index, delta) {
@@ -4913,8 +4951,48 @@ function confirmClearData() {
 // Modal
 // ============================
 
+// iOS はキーボード表示で dvh/fixed が縮まないため、履歴追加系モーダルのみ visualViewport に追従させる
+const VV_FIT_MODALS = ['addHistory', 'editHistoryQuantity'];
+let vvFitName = null;
+function vvFitApply() {
+  const vv = window.visualViewport;
+  const overlay = vvFitName && document.getElementById('modal-' + vvFitName);
+  if (!vv || !overlay || !overlay.classList.contains('show')) { vvFitStop(); return; }
+  overlay.style.top = vv.offsetTop + 'px';
+  overlay.style.bottom = 'auto';
+  overlay.style.height = vv.height + 'px';
+  if (vvFitName === 'addHistory') {
+    const m = overlay.querySelector('.modal');
+    m.style.height = vv.height + 'px';
+    m.style.maxHeight = vv.height + 'px';
+  }
+}
+function vvFitStart(name) {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  vvFitStop();
+  vvFitName = name;
+  vv.addEventListener('resize', vvFitApply);
+  vv.addEventListener('scroll', vvFitApply);
+  vvFitApply();
+}
+function vvFitStop() {
+  const vv = window.visualViewport;
+  if (vv) { vv.removeEventListener('resize', vvFitApply); vv.removeEventListener('scroll', vvFitApply); }
+  const overlay = vvFitName && document.getElementById('modal-' + vvFitName);
+  if (overlay) {
+    overlay.style.top = ''; overlay.style.bottom = ''; overlay.style.height = '';
+    if (vvFitName === 'addHistory') {
+      const m = overlay.querySelector('.modal');
+      m.style.height = '100dvh'; m.style.maxHeight = '100dvh';
+    }
+  }
+  vvFitName = null;
+}
+
 function openModal(name) {
   document.getElementById('modal-' + name).classList.add('show');
+  if (VV_FIT_MODALS.includes(name)) vvFitStart(name);
   if (name === 'addProduct') {
     const sel = document.getElementById('addVendor');
     sel.innerHTML = DATA.vendors.filter(v => v.isActive !== false).map(v =>
@@ -4928,6 +5006,7 @@ function openModal(name) {
 
 function closeModal(name) {
   document.getElementById('modal-' + name).classList.remove('show');
+  if (name === vvFitName) vvFitStop();
 }
 
 document.getElementById('modal-mapping').addEventListener('click', e => { if (e.target.id === 'modal-mapping') closeMappingModal(); });
@@ -4966,11 +5045,11 @@ function productNameHtml(name) {
   return `<span class="product-name-code">${esc(match[1])}</span><span class="product-name-kind">（${esc(match[2])}）</span>`;
 }
 
-function showToast(msg) {
+function showToast(msg, duration) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 1800);
+  setTimeout(() => t.classList.remove('show'), duration || 1800);
 }
 
 // ============================
