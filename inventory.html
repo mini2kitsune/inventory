@@ -3275,6 +3275,15 @@ function mappingBuildManualLinks(t, products, vendors, orderHistory, now) {
     r.manualNote = note;
   };
   [].concat(t.certain, t.pending, t.newOnly).forEach(annotate);
+  // 旧のみの行: その旧が誰かの手入力 pred に入っていれば注記に替える（消さない）。『お知らせください』の文は外す。
+  const linkedTo = new Map();
+  links.forEach(l => l.olds.forEach(o => { if (!linkedTo.has(o.id)) linkedTo.set(o.id, []); linkedTo.get(o.id).push(l.newP.name); }));
+  (t.oldOnly || []).forEach(r => {
+    const news = r.old && linkedTo.get(r.old.id);
+    if (!news) return;
+    r.manualNote = `殿が手入力で「${news.join('」「')}」に結び付け済み`;
+    r.hint = (r.hint || '').replace(/。?同じ商品をフジシン・ミツイで頼んでいれば、その商品名をお知らせください/, '');
+  });
   return { links, count: links.length };
 }
 // MAPPING-PURE-END
@@ -3324,7 +3333,8 @@ function mappingManualLinkHtml(l) {
 function mappingNewOnlyHtml(r) {
   return `<div style="background:var(--surface2);border-radius:12px;padding:8px 12px;margin-bottom:6px;font-size:13px;">
     <div><span style="display:inline-block;background:rgba(108,99,255,0.25);border-radius:8px;padding:1px 8px;font-size:12px;margin-right:6px;">${esc(r.rowId)}</span>${productNameHtml(r.newP.name)}（${esc(r.newP.vendorName)}）</div>
-    <div style="margin-top:4px;color:var(--text-sub);">新 ${MAPPING_WINDOW_DAYS}日で ${r.newStats.qty}個（${r.newStats.count}回）｜<span style="color:var(--warning);font-weight:700;">要確認</span>：${esc(MAPPING_REASON_TEXT.R12)}</div>
+    <div style="margin-top:4px;color:var(--text-sub);">新 ${MAPPING_WINDOW_DAYS}日で ${r.newStats.qty}個（${r.newStats.count}回）｜${r.manualNote ? '<span style="color:var(--success);font-weight:700;">手入力リンクあり（殿が設定済み）</span>' : `<span style="color:var(--warning);font-weight:700;">要確認</span>：${esc(MAPPING_REASON_TEXT.R12)}`}</div>
+    ${r.manualNote ? `<div style="font-size:11px;color:var(--warning);margin-top:2px;">注記: ${esc(r.manualNote)}</div>` : ''}
   </div>`;
 }
 
@@ -3358,6 +3368,7 @@ function mappingOldOnlyHtml(r) {
     <div><span style="display:inline-block;background:rgba(108,99,255,0.25);border-radius:8px;padding:1px 8px;font-size:12px;margin-right:6px;">${esc(r.rowId)}</span>${esc(r.old.name)}（${esc(r.old.vendorName)}）${r.old.active ? '' : '（非表示）'}</div>
     <div style="margin-top:4px;color:var(--text-sub);">${esc(mappingStatsText(r.oldStats, null))}</div>
     <div style="margin-top:4px;"><span style="color:var(--warning);font-weight:700;">要確認</span>：${reasons}${r.hint ? '（' + esc(r.hint) + '）' : ''}</div>
+    ${r.manualNote ? `<div style="font-size:11px;color:var(--warning);margin-top:2px;">注記: ${esc(r.manualNote)}</div>` : ''}
   </div>`;
 }
 
