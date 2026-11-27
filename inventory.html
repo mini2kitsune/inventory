@@ -822,10 +822,50 @@ let isOnline = navigator.onLine;
 // ============================
 const STORAGE_KEY = 'inventory_app';
 
+// 段1: 履歴の productName・vendorName・price は、読み込みのたびに商品・仕入先から作り直せる値
+// （loadDataFromSupabase が作る値と同じ）。端末には書かず、読むとき作り直す。
+function historyDerivedFields(h, productMap, vendorMap) {
+  return {
+    productName: productMap[h.productId]?.name || '削除済み',
+    vendorName: vendorMap[h.vendorId]?.name || '',
+    price: productMap[h.productId]?.price || 0,
+  };
+}
+function buildHistoryMaps(data) {
+  const productMap = {}, vendorMap = {};
+  (data.products || []).forEach(p => { productMap[p.id] = p; });
+  (data.vendors || []).forEach(v => { vendorMap[v.id] = v; });
+  return { productMap, vendorMap };
+}
+// 端末に書く形: 作り直した値と同じ場合だけ省く（違う値は残す＝損失なし）。data は変更しない。
+function slimForStorage(data) {
+  if (!data || !Array.isArray(data.orderHistory)) return data;
+  const { productMap, vendorMap } = buildHistoryMaps(data);
+  const orderHistory = data.orderHistory.map(h => {
+    if (!h || typeof h !== 'object') return h;
+    const d = historyDerivedFields(h, productMap, vendorMap);
+    const o = Object.assign({}, h);
+    ['productName', 'vendorName', 'price'].forEach(k => { if (k in o && o[k] === d[k]) delete o[k]; });
+    return o;
+  });
+  return Object.assign({}, data, { orderHistory });
+}
+// 読むとき: 無い項目だけ作り直す（旧形式＝名前入りで保存済みのデータはそのまま）
+function rehydrateHistory(data) {
+  if (!data || !Array.isArray(data.orderHistory)) return data;
+  const { productMap, vendorMap } = buildHistoryMaps(data);
+  data.orderHistory.forEach(h => {
+    if (!h || typeof h !== 'object') return;
+    const d = historyDerivedFields(h, productMap, vendorMap);
+    ['productName', 'vendorName', 'price'].forEach(k => { if (!(k in h)) h[k] = d[k]; });
+  });
+  return data;
+}
+
 function loadDataFromCache() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) return rehydrateHistory(JSON.parse(raw));
   } catch(e) {}
   return null;
 }
@@ -863,7 +903,7 @@ function storageUsageText() {
 let _saveFailToastAt = {};
 function saveData(data, opts) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(slimForStorage(data)));
     return true;
   } catch(e) {
     console.error('saveData failed', e);
@@ -1447,6 +1487,17 @@ async function loadDataFromSupabase() {
     for (const result of [vRes, pRes, iRes, ohRes, shRes]) {
       if (result?.error) throw result.error;
       if (!Array.isArray(result?.data)) throw new Error('Supabaseから一覧データを取得できませんでした');
+    }
+
+    // 段1: サーバーが仕入先0件・商品0件を返し、端末には商品がある場合は端末を上書きしない（空データ上書き事故の防止）。
+    // 端末の本体・写し（inventory_app_local_backup）には触れない。
+    if (vRes.data.length === 0 && pRes.data.length === 0) {
+      const localProducts = Math.max((DATA && DATA.products || []).length, (loadDataFromCache()?.products || []).length);
+      if (localProducts > 0) {
+        console.warn('loadDataFromSupabase: server returned empty vendors/products; keeping local data', { localProducts });
+        showToast('サーバーのデータが空です。端末のデータは消していません', 6000);
+        return;
+      }
     }
 
     const invMap = {};
