@@ -1516,6 +1516,10 @@ async function idbBackupGetRaw() {
   if (!idbBackupAvailable()) return null;
   try { return (await idbBackupOp('get', 'latest')) || null; } catch(e) { console.warn('idbBackupGetRaw', e); return null; }
 }
+async function idbBackupGetPreviousRaw() {
+  if (!idbBackupAvailable()) return null;
+  try { return (await idbBackupOp('get', 'previous_ls_backup')) || null; } catch(e) { console.warn('idbBackupGetPreviousRaw', e); return null; }
+}
 // 4種の配列について、件数とIDの集合が同じか
 function backupMatches(a, b) {
   if (!a || !b) return false;
@@ -1539,6 +1543,18 @@ async function backupAfterLoad(snapshot) {
   if (!snapshot || !(snapshot.vendors?.length > 0 || snapshot.products?.length > 0)) return false;
   if (!idbBackupAvailable()) return false;
   try {
+    // R1: 既にある写し(latest)より新しい写しの商品数・注文履歴数が0（既存は1以上）なら、保険を失わないよう何もしない
+    try {
+      const prevRaw = await idbBackupOp('get', 'latest');
+      if (typeof prevRaw === 'string') {
+        const prev = JSON.parse(prevRaw);
+        const n = (o, k) => (o && Array.isArray(o[k])) ? o[k].length : 0;
+        if ((n(prev, 'products') > 0 && n(snapshot, 'products') === 0) || (n(prev, 'orderHistory') > 0 && n(snapshot, 'orderHistory') === 0)) {
+          console.warn('backupAfterLoad: new copy has fewer (zero) products/history than existing; keeping existing copy');
+          return false;
+        }
+      }
+    } catch(e) { /* 既存の写しが読めない・壊れているときは従来どおり進める */ }
     const str = JSON.stringify(snapshot);
     // 候補に書く→読み戻して一致を確かめる→一致したら本番(latest)へ。不一致なら候補だけを捨てる（今ある写しは不変）
     await idbBackupOp('put', 'candidate', str);
@@ -1555,6 +1571,21 @@ async function backupAfterLoad(snapshot) {
       return false;
     }
     try { await idbBackupOp('delete', 'candidate'); } catch(e) {}
+    // R2: 古い localStorage の写しを外す【前に】、その生の文字列を IndexedDB の previous_ls_backup に残して完全一致を確かめる。
+    // 既に previous_ls_backup があれば上書きしない（最初の1回の古い写しを残す）。確かめられなければ localStorage の写しは外さない。
+    let oldLs = null;
+    try { oldLs = localStorage.getItem(BACKUP_LS_KEY); } catch(e) { oldLs = null; }
+    if (typeof oldLs === 'string') {
+      const existingPrev = await idbBackupOp('get', 'previous_ls_backup');
+      if (typeof existingPrev !== 'string' || existingPrev === '') {
+        await idbBackupOp('put', 'previous_ls_backup', oldLs);
+        const backPrev = await idbBackupOp('get', 'previous_ls_backup');
+        if (backPrev !== oldLs) {
+          console.warn('backupAfterLoad: previous_ls_backup verification mismatch; keeping localStorage copy');
+          return false;
+        }
+      }
+    }
     try { localStorage.removeItem(BACKUP_LS_KEY); } catch(e) { console.warn('backupAfterLoad remove LS copy', e); }
     return true;
   } catch(e) {
@@ -1579,12 +1610,14 @@ async function loadDataFromSupabase() {
       if (!Array.isArray(result?.data)) throw new Error('Supabaseから一覧データを取得できませんでした');
     }
 
-    // 段1: サーバーが仕入先0件・商品0件を返し、端末には商品がある場合は端末を上書きしない（空データ上書き事故の防止）。
-    // 端末の本体・写し（inventory_app_local_backup）には触れない。
-    if (vRes.data.length === 0 && pRes.data.length === 0) {
-      const localProducts = Math.max((DATA && DATA.products || []).length, (loadDataFromCache()?.products || []).length);
-      if (localProducts > 0) {
-        console.warn('loadDataFromSupabase: server returned empty vendors/products; keeping local data', { localProducts });
+    // 段1+R1: サーバーの商品が0件で端末に商品がある、またはサーバーの注文履歴が0件で端末に注文履歴がある場合は端末を上書きしない（空データ上書き事故の防止）。
+    // 棚卸履歴はサーバーに保存されない端末だけのデータなので守りの対象にしない。端末の本体・写し（inventory_app_local_backup）には触れない。
+    {
+      const cachedNow = loadDataFromCache();
+      const localProducts = Math.max((DATA && DATA.products || []).length, (cachedNow?.products || []).length);
+      const localOrderHistory = Math.max((DATA && DATA.orderHistory || []).length, (cachedNow?.orderHistory || []).length);
+      if ((pRes.data.length === 0 && localProducts > 0) || (ohRes.data.length === 0 && localOrderHistory > 0)) {
+        console.warn('loadDataFromSupabase: server returned empty products/order history; keeping local data', { localProducts, localOrderHistory });
         showToast('サーバーのデータが空です。端末のデータは消していません', 6000);
         return false;
       }
@@ -5610,8 +5643,8 @@ function setupRealtime() {
 // Migration: localStorage → Supabase
 // ============================
 async function migrateFromLocalStorage() {
-  // 読む順: IndexedDB の写し → localStorage の写し → 本体
-  const raw = (await idbBackupGetRaw()) || localStorage.getItem(BACKUP_LS_KEY) || localStorage.getItem('inventory_app');
+  // 読む順: IndexedDB latest → IndexedDB previous_ls_backup → localStorage の写し → 本体
+  const raw = (await idbBackupGetRaw()) || (await idbBackupGetPreviousRaw()) || localStorage.getItem(BACKUP_LS_KEY) || localStorage.getItem('inventory_app');
   if (!raw) {
     showToast('移行するローカルデータがありません');
     return;
