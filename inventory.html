@@ -4663,7 +4663,7 @@ async function confirmOrder() {
     DATA.orderHistory = DATA.orderHistory.filter(h => !nids.has(h.id));
     try { saveSyncQueue(queueBefore); } catch (e3) { console.warn('confirmOrder rollback saveSyncQueue', e3); }
     let r = 'fail';
-    try { r = await directSaveEntries(newEntries, 'order'); } catch (e4) { console.error('confirmOrder direct', e4); }
+    try { r = await directSaveEntries(newEntries, 'order|' + toJSTDateKey(new Date())); } catch (e4) { console.error('confirmOrder direct', e4); }
     if (r !== 'ok') {
       showToast((r === 'offline' ? 'オフラインで、発注の履歴を保存できませんでした。' : '発注の履歴を保存できませんでした。')
         + '発注は確定していません。通信できる場所でもう一度お試しください（' + storageUsageText() + '）', 6000);
