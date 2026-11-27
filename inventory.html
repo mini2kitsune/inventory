@@ -830,14 +830,53 @@ function loadDataFromCache() {
   return null;
 }
 
+// 端末の保存領域の使用量（読み取り専用の診断。例外はすべて握る）
+function storageUsage() {
+  const keys = [];
+  let totalChars = 0;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key == null) continue;
+      let chars = 0;
+      try { chars = (localStorage.getItem(key) || '').length + key.length; } catch(e) {}
+      keys.push({ key, chars });
+      totalChars += chars;
+    }
+  } catch(e) { return { totalChars: 0, keys: [] }; }
+  keys.sort((a, b) => b.chars - a.chars);
+  return { totalChars, keys };
+}
+// 1文字=2バイト(UTF-16)の概算。上位2キー＋その他
+function storageUsageText() {
+  const u = storageUsage();
+  const mb = c => (c * 2 / 1048576).toFixed(1);
+  const top = u.keys.slice(0, 2);
+  const rest = u.keys.slice(2).reduce((s, k) => s + k.chars, 0);
+  const parts = top.map(k => k.key + ' ' + mb(k.chars) + 'MB');
+  parts.push('その他 ' + mb(rest) + 'MB');
+  return '使用量 約' + mb(u.totalChars) + 'MB（' + parts.join('・') + '）';
+}
+
 // 戻り値: 保存成功=true / 失敗(容量超過等)=false。失敗時は既存の localStorage キーに一切触れず、トーストで知らせるのみ。
-function saveData(data) {
+// opts.silent=true なら失敗トーストを出さない（呼び出し側が文言を決める）。同じ文言は1分に1回まで。
+let _saveFailToastAt = {};
+function saveData(data, opts) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     return true;
   } catch(e) {
     console.error('saveData failed', e);
-    showToast('端末の保存領域が不足しています。保存できませんでした', 3500);
+    if (opts && opts.silent) return false;
+    const isQuota = !!e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014 || /quota/i.test(String(e.message || '')));
+    const msg = isQuota
+      ? '端末の保存領域が不足しています。保存できませんでした（' + storageUsageText() + '）'
+      : '端末に保存できませんでした（' + (e && e.message ? e.message : e) + '）';
+    const now = Date.now();
+    if (!_saveFailToastAt[msg] || now - _saveFailToastAt[msg] > 60000) {
+      _saveFailToastAt[msg] = now;
+      showToast(msg, 5000);
+    }
     return false;
   }
 }
@@ -4332,6 +4371,7 @@ async function saveEditedHistoryQuantity() {
 }
 
 function initHistoryModal() {
+  manualHistoryDirectIds = {};
   document.querySelector('#modal-addHistory .modal').scrollTop = 0;
   // 今日の日付をデフォルトに
   document.getElementById('histDate').value = toJSTDateKey(new Date());
@@ -4396,6 +4436,36 @@ function changeManualQty(productId, delta) {
 }
 
 let manualHistorySaving = false; // 二重タップ防止
+// 直接保存の失敗時に同じ id で再試行できるよう、(商品・数量・日付)ごとの UUID を保つ。モーダルを開き直すと忘れる
+let manualHistoryDirectIds = {};
+function genUUID() {
+  return window.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 3 | 8)).toString(16);
+  });
+}
+// 端末に保存できないとき、order_history へ直接 insert（processSyncQueue の insert_order_history と同じ列）。
+// 戻り値 true=全件サーバーに入った。入ったかもしれない分を消す操作はしない。
+async function saveHistoryDirect(entries) {
+  try {
+    const rows = entries.map(e => ({
+      id: e.id, tenant_id: TENANT_ID, product_id: e.productId, vendor_id: e.vendorId,
+      order_date: e.date, quantity: e.quantity, stock_at_order: e.stockAtOrder,
+    }));
+    const { error } = await sbClient.from('order_history').insert(rows);
+    if (!error) return true;
+    if (error.code === '23505') {
+      const ids = rows.map(r => r.id);
+      const { data, error: e2 } = await sbClient.from('order_history').select('id').eq('tenant_id', TENANT_ID).in('id', ids);
+      return !e2 && Array.isArray(data) && data.length === ids.length;
+    }
+    console.error('saveHistoryDirect', error);
+    return false;
+  } catch (e) {
+    console.error('saveHistoryDirect', e);
+    return false;
+  }
+}
 async function saveManualHistory() {
   if (manualHistorySaving) return;
   manualHistorySaving = true;
@@ -4444,8 +4514,33 @@ async function saveManualHistory() {
   queueBefore = getSyncQueue();
   pushed = true;
   newEntries.forEach(entry => DATA.orderHistory.push(entry));
-  if (!saveData(DATA)) {
+  if (!saveData(DATA, { silent: true })) {
     rollback();
+    pushed = false;
+    // 端末に保存できない: オンラインならサーバーへ直接保存（端末の既存データには触れない）
+    if (!sbClient || !isOnline) {
+      showToast('オフラインで、端末にも保存できません。通信できる場所でお試しください（' + storageUsageText() + '）', 5000);
+      return;
+    }
+    // 再試行で二重にならないよう、(商品・数量・日付)ごとに UUID を保つ
+    newEntries.forEach(e => {
+      const k = e.productId + '|' + e.quantity + '|' + (dateVal || '');
+      if (!manualHistoryDirectIds[k]) manualHistoryDirectIds[k] = genUUID();
+      e.id = manualHistoryDirectIds[k];
+    });
+    const okDirect = await saveHistoryDirect(newEntries);
+    if (!okDirect) {
+      showToast('サーバーにも保存できませんでした。時間をおいてもう一度お試しください（' + storageUsageText() + '）', 5000);
+      return;
+    }
+    newEntries.forEach(entry => DATA.orderHistory.push(entry)); // メモリのみ（表示用）。次回読込でサーバーから戻る
+    committed = true;
+    manualHistoryDirectIds = {};
+    manualHistoryItems = {};
+    closeModal('addHistory');
+    document.querySelector('#modal-addHistory .modal').scrollTop = 0;
+    showToast(`${newEntries.length}件の履歴を保存しました（端末の保存領域が不足のため、サーバーに直接保存しました）`, 4500);
+    render();
     return;
   }
   if (!newEntries.every(enqueueOrderHistory)) {
