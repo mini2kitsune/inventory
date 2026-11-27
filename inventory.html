@@ -1473,6 +1473,96 @@ async function normalizeToelProductNames() {
   saveData(DATA);
 }
 
+// ============================
+// 段2: 端末データの写しを IndexedDB へ（localStorage の容量を空ける）
+// 写しの役目: サーバーが空・消えたときの保険。中身は減らさず置き場所だけ移す。
+// 新しい置き場所に書いて読み戻し、件数とIDの集合が同じと確かめてから、localStorage の写し1キーだけを外す。
+// 確かめられない・例外が出たときは何も消さない（ログのみ・トーストなし）。
+// ============================
+const BACKUP_LS_KEY = 'inventory_app_local_backup';
+const BACKUP_IDB_NAME = 'inventory_backup';
+const BACKUP_IDB_STORE = 'backup';
+function idbBackupAvailable() {
+  try { return typeof indexedDB !== 'undefined' && !!indexedDB; } catch(e) { return false; }
+}
+function idbBackupOpen() {
+  return new Promise((resolve, reject) => {
+    let r;
+    try { r = indexedDB.open(BACKUP_IDB_NAME, 1); } catch(e) { reject(e); return; }
+    r.onupgradeneeded = () => { try { r.result.createObjectStore(BACKUP_IDB_STORE); } catch(e) { reject(e); } };
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error || new Error('idb open error'));
+    r.onblocked = () => reject(new Error('idb blocked'));
+  });
+}
+// op: 'put' | 'get' | 'delete'。put/delete は書き込みの完了(tx.oncomplete)まで待つ
+async function idbBackupOp(op, key, value) {
+  const db = await idbBackupOpen();
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(BACKUP_IDB_STORE, op === 'get' ? 'readonly' : 'readwrite');
+      const st = tx.objectStore(BACKUP_IDB_STORE);
+      let req;
+      if (op === 'put') req = st.put(value, key);
+      else if (op === 'delete') req = st.delete(key);
+      else req = st.get(key);
+      tx.oncomplete = () => resolve(op === 'get' ? req.result : true);
+      tx.onerror = () => reject(tx.error || (req && req.error) || new Error('idb tx error'));
+      tx.onabort = () => reject(tx.error || new Error('idb tx abort'));
+    });
+  } finally { try { db.close(); } catch(e) {} }
+}
+async function idbBackupGetRaw() {
+  if (!idbBackupAvailable()) return null;
+  try { return (await idbBackupOp('get', 'latest')) || null; } catch(e) { console.warn('idbBackupGetRaw', e); return null; }
+}
+// 4種の配列について、件数とIDの集合が同じか
+function backupMatches(a, b) {
+  if (!a || !b) return false;
+  for (const k of ['vendors', 'products', 'orderHistory', 'stocktakingHistory']) {
+    const x = Array.isArray(a[k]) ? a[k] : [], y = Array.isArray(b[k]) ? b[k] : [];
+    if (x.length !== y.length) return false;
+    const ids = new Set(x.map(e => e && e.id));
+    if (ids.size !== new Set(y.map(e => e && e.id)).size) return false;
+    for (const e of y) if (!ids.has(e && e.id)) return false;
+  }
+  return true;
+}
+// サーバー読込の前: IndexedDB が使えない端末だけ、従来どおり localStorage に写す（何も変えない）
+function backupBeforeLoad(snapshot) {
+  if (!snapshot || !(snapshot.vendors?.length > 0 || snapshot.products?.length > 0)) return;
+  if (idbBackupAvailable()) return;
+  try { localStorage.setItem(BACKUP_LS_KEY, JSON.stringify(snapshot)); } catch(e) {}
+}
+// サーバーから全部を読めた直後だけ呼ぶ。snapshot は読込の前の端末データ。戻り値 true=IndexedDB に確かめて写した
+async function backupAfterLoad(snapshot) {
+  if (!snapshot || !(snapshot.vendors?.length > 0 || snapshot.products?.length > 0)) return false;
+  if (!idbBackupAvailable()) return false;
+  try {
+    const str = JSON.stringify(snapshot);
+    // 候補に書く→読み戻して一致を確かめる→一致したら本番(latest)へ。不一致なら候補だけを捨てる（今ある写しは不変）
+    await idbBackupOp('put', 'candidate', str);
+    const back = await idbBackupOp('get', 'candidate');
+    if (typeof back !== 'string' || !backupMatches(snapshot, JSON.parse(back))) {
+      console.warn('backupAfterLoad: verification mismatch; keeping existing copies');
+      try { await idbBackupOp('delete', 'candidate'); } catch(e) {}
+      return false;
+    }
+    await idbBackupOp('put', 'latest', str);
+    const back2 = await idbBackupOp('get', 'latest');
+    if (typeof back2 !== 'string' || !backupMatches(snapshot, JSON.parse(back2))) {
+      console.warn('backupAfterLoad: latest verification mismatch; keeping localStorage copy');
+      return false;
+    }
+    try { await idbBackupOp('delete', 'candidate'); } catch(e) {}
+    try { localStorage.removeItem(BACKUP_LS_KEY); } catch(e) { console.warn('backupAfterLoad remove LS copy', e); }
+    return true;
+  } catch(e) {
+    console.warn('backupAfterLoad aborted', e);
+    return false;
+  }
+}
+
 async function loadDataFromSupabase() {
   if (!sbClient) return;
   try {
@@ -1496,7 +1586,7 @@ async function loadDataFromSupabase() {
       if (localProducts > 0) {
         console.warn('loadDataFromSupabase: server returned empty vendors/products; keeping local data', { localProducts });
         showToast('サーバーのデータが空です。端末のデータは消していません', 6000);
-        return;
+        return false;
       }
     }
 
@@ -1588,6 +1678,7 @@ async function loadDataFromSupabase() {
     lastSyncTime = new Date();
     updateSyncDisplay();
     // autoApplySortOrder: P7でD&D実装完了・並びはsortOrderに焼き付け済みのため削除
+    return true; // サーバーから全部を読めた
   } catch(e) {
     console.warn('Supabase load failed, using cache:', e);
     // Use cache (DATA is already set from loadDataFromCache on page load)
@@ -1595,6 +1686,7 @@ async function loadDataFromSupabase() {
       isOnline = false;
       updateOnlineStatus();
     }
+    return false;
   }
 }
 
@@ -1640,12 +1732,11 @@ async function init() {
 
     // Save local backup before Supabase load overwrites it
     const localSnapshot = loadDataFromCache();
-    if (localSnapshot && (localSnapshot.vendors?.length > 0 || localSnapshot.products?.length > 0)) {
-      try { localStorage.setItem('inventory_app_local_backup', JSON.stringify(localSnapshot)); } catch(e) {}
-    }
+    backupBeforeLoad(localSnapshot);
 
     // Load fresh data from Supabase
-    await loadDataFromSupabase();
+    const loadedOk = await loadDataFromSupabase();
+    if (loadedOk) backupAfterLoad(localSnapshot); // 読めたときだけ IndexedDB へ写す（待たない）
     setupRealtime();
     render();
     maybeOpenMappingFromHash();
@@ -1662,10 +1753,9 @@ async function init() {
       document.getElementById('loginOverlay').style.display = 'none';
       // Save local backup before DATA is overwritten by Supabase load
       const localSnapshot = loadDataFromCache();
-      if (localSnapshot && (localSnapshot.vendors?.length > 0 || localSnapshot.products?.length > 0)) {
-        try { localStorage.setItem('inventory_app_local_backup', JSON.stringify(localSnapshot)); } catch(e) {}
-      }
-      await loadDataFromSupabase();
+      backupBeforeLoad(localSnapshot);
+      const loadedOk = await loadDataFromSupabase();
+      if (loadedOk) backupAfterLoad(localSnapshot);
       setupRealtime();
       currentVendorId = getPreferredVendorId(DATA);
       persistCurrentVendorId();
@@ -5520,7 +5610,8 @@ function setupRealtime() {
 // Migration: localStorage → Supabase
 // ============================
 async function migrateFromLocalStorage() {
-  const raw = localStorage.getItem('inventory_app_local_backup') || localStorage.getItem('inventory_app');
+  // 読む順: IndexedDB の写し → localStorage の写し → 本体
+  const raw = (await idbBackupGetRaw()) || localStorage.getItem(BACKUP_LS_KEY) || localStorage.getItem('inventory_app');
   if (!raw) {
     showToast('移行するローカルデータがありません');
     return;
