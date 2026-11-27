@@ -4466,6 +4466,35 @@ async function saveHistoryDirect(entries) {
     return false;
   }
 }
+// 端末に保存できないとき newEntries をサーバーへ直接保存して画面を閉じる共通処理。
+// 呼び出し前に端末側の DATA.orderHistory から newEntries は除去済みであること（二重登録防止）。戻り値 true=保存成功
+async function commitHistoryDirect(newEntries, dateVal) {
+  if (!sbClient || !isOnline) {
+    showToast('オフラインで、端末にも保存できません。通信できる場所でお試しください（' + storageUsageText() + '）', 5000);
+    return false;
+  }
+  // 再試行で二重にならないよう、(商品・数量・日付)ごとに UUID を保つ
+  newEntries.forEach(e => {
+    const k = e.productId + '|' + e.quantity + '|' + (dateVal || '');
+    if (!manualHistoryDirectIds[k]) manualHistoryDirectIds[k] = genUUID();
+    e.id = manualHistoryDirectIds[k];
+  });
+  const okDirect = await saveHistoryDirect(newEntries);
+  if (!okDirect) {
+    showToast('サーバーにも保存できませんでした。時間をおいてもう一度お試しください（' + storageUsageText() + '）', 5000);
+    return false;
+  }
+  const ids = new Set(newEntries.map(e => e.id));
+  DATA.orderHistory = DATA.orderHistory.filter(h => !ids.has(h.id)); // 念のため同 id の重複を除く
+  newEntries.forEach(entry => DATA.orderHistory.push(entry)); // メモリのみ（表示用）。次回読込でサーバーから戻る
+  manualHistoryDirectIds = {};
+  manualHistoryItems = {};
+  closeModal('addHistory');
+  document.querySelector('#modal-addHistory .modal').scrollTop = 0;
+  showToast(`${newEntries.length}件の履歴を保存しました（端末の保存領域が不足のため、サーバーに直接保存しました）`, 4500);
+  try { render(); } catch (e) { console.error('commitHistoryDirect render', e); }
+  return true;
+}
 async function saveManualHistory() {
   if (manualHistorySaving) return;
   manualHistorySaving = true;
@@ -4518,35 +4547,18 @@ async function saveManualHistory() {
     rollback();
     pushed = false;
     // 端末に保存できない: オンラインならサーバーへ直接保存（端末の既存データには触れない）
-    if (!sbClient || !isOnline) {
-      showToast('オフラインで、端末にも保存できません。通信できる場所でお試しください（' + storageUsageText() + '）', 5000);
-      return;
-    }
-    // 再試行で二重にならないよう、(商品・数量・日付)ごとに UUID を保つ
-    newEntries.forEach(e => {
-      const k = e.productId + '|' + e.quantity + '|' + (dateVal || '');
-      if (!manualHistoryDirectIds[k]) manualHistoryDirectIds[k] = genUUID();
-      e.id = manualHistoryDirectIds[k];
-    });
-    const okDirect = await saveHistoryDirect(newEntries);
-    if (!okDirect) {
-      showToast('サーバーにも保存できませんでした。時間をおいてもう一度お試しください（' + storageUsageText() + '）', 5000);
-      return;
-    }
-    newEntries.forEach(entry => DATA.orderHistory.push(entry)); // メモリのみ（表示用）。次回読込でサーバーから戻る
-    committed = true;
-    manualHistoryDirectIds = {};
-    manualHistoryItems = {};
-    closeModal('addHistory');
-    document.querySelector('#modal-addHistory .modal').scrollTop = 0;
-    showToast(`${newEntries.length}件の履歴を保存しました（端末の保存領域が不足のため、サーバーに直接保存しました）`, 4500);
-    render();
+    console.warn('saveManualHistory: saveData failed -> direct save');
+    if (await commitHistoryDirect(newEntries, dateVal)) committed = true;
     return;
   }
   if (!newEntries.every(enqueueOrderHistory)) {
+    // 同期キューの保存に失敗: 端末の DATA・キューを元に戻してから、サーバーへ直接保存
+    console.warn('saveManualHistory: enqueueOrderHistory failed (sync queue storage) -> direct save');
     rollback();
-    saveData(DATA);
-    saveSyncQueue(queueBefore);
+    pushed = false;
+    try { saveData(DATA, { silent: true }); } catch (e3) { console.warn('rollback saveData', e3); }
+    try { saveSyncQueue(queueBefore); } catch (e3) { console.warn('rollback saveSyncQueue', e3); }
+    if (await commitHistoryDirect(newEntries, dateVal)) committed = true;
     return;
   }
   pushed = false; // 保存確定。以降の例外では巻き戻さない
