@@ -4468,25 +4468,38 @@ async function saveHistoryDirect(entries) {
 }
 // 端末に保存できないとき newEntries をサーバーへ直接保存して画面を閉じる共通処理。
 // 呼び出し前に端末側の DATA.orderHistory から newEntries は除去済みであること（二重登録防止）。戻り値 true=保存成功
-async function commitHistoryDirect(newEntries, dateVal) {
-  if (!sbClient || !isOnline) {
-    showToast('オフラインで、端末にも保存できません。通信できる場所でお試しください（' + storageUsageText() + '）', 5000);
-    return false;
-  }
+// newEntries をサーバーへ直接保存する共通処理（画面は触らない）。戻り値 'ok' | 'offline' | 'fail'
+// 'ok' のとき、メモリ DATA.orderHistory へ（同 id を除いてから）反映する。
+async function directSaveEntries(newEntries, keyDate) {
+  if (!sbClient || !isOnline) return 'offline';
+  // 送信待ちに新規分の op が残っていれば（巻き戻しの保存も失敗した場合）、その remoteId を使い二重登録を防ぐ
+  const queuedRemote = {};
+  try {
+    getSyncQueue().forEach(op => { if (op && op.type === 'insert_order_history' && op.localId && op.remoteId) queuedRemote[op.localId] = op.remoteId; });
+  } catch (e) { console.warn('directSaveEntries queue read', e); }
   // 再試行で二重にならないよう、(商品・数量・日付)ごとに UUID を保つ
   newEntries.forEach(e => {
-    const k = e.productId + '|' + e.quantity + '|' + (dateVal || '');
-    if (!manualHistoryDirectIds[k]) manualHistoryDirectIds[k] = genUUID();
+    const k = e.productId + '|' + e.quantity + '|' + (keyDate || '');
+    if (!manualHistoryDirectIds[k]) manualHistoryDirectIds[k] = queuedRemote[e.id] || genUUID();
     e.id = manualHistoryDirectIds[k];
   });
   const okDirect = await saveHistoryDirect(newEntries);
-  if (!okDirect) {
-    showToast('サーバーにも保存できませんでした。時間をおいてもう一度お試しください（' + storageUsageText() + '）', 5000);
-    return false;
-  }
+  if (!okDirect) return 'fail';
   const ids = new Set(newEntries.map(e => e.id));
   DATA.orderHistory = DATA.orderHistory.filter(h => !ids.has(h.id)); // 念のため同 id の重複を除く
   newEntries.forEach(entry => DATA.orderHistory.push(entry)); // メモリのみ（表示用）。次回読込でサーバーから戻る
+  return 'ok';
+}
+async function commitHistoryDirect(newEntries, dateVal) {
+  const r = await directSaveEntries(newEntries, dateVal);
+  if (r === 'offline') {
+    showToast('オフラインで、端末にも保存できません。通信できる場所でお試しください（' + storageUsageText() + '）', 5000);
+    return false;
+  }
+  if (r !== 'ok') {
+    showToast('サーバーにも保存できませんでした。時間をおいてもう一度お試しください（' + storageUsageText() + '）', 5000);
+    return false;
+  }
   manualHistoryDirectIds = {};
   manualHistoryItems = {};
   closeModal('addHistory');
@@ -4614,6 +4627,9 @@ async function confirmOrder() {
 
   const now = new Date().toISOString();
   const checklistItems = [];
+  const newEntries = [];
+  const queueBefore = getSyncQueue();
+  let enqueueOk = true;
   targetItems.forEach(item => {
     const p = DATA.products.find(x => x.id === item.productId);
     if (!p) return;
@@ -4629,7 +4645,8 @@ async function confirmOrder() {
       price: p.price || 0,
     };
     DATA.orderHistory.push(entry);
-    enqueueOrderHistory(entry);
+    newEntries.push(entry);
+    if (!enqueueOrderHistory(entry)) enqueueOk = false;
     checklistItems.push({
       name: p.name,
       quantity: item.quantity,
@@ -4639,13 +4656,29 @@ async function confirmOrder() {
     });
   });
 
+  if (!enqueueOk) {
+    // 送信待ちを端末に保存できない: 端末側を元に戻し、履歴をサーバーへ直接保存する。失敗なら確定しない（カゴは消さない）
+    console.warn('confirmOrder: enqueueOrderHistory failed (sync queue storage) -> direct save');
+    const nids = new Set(newEntries.map(e => e.id));
+    DATA.orderHistory = DATA.orderHistory.filter(h => !nids.has(h.id));
+    try { saveSyncQueue(queueBefore); } catch (e3) { console.warn('confirmOrder rollback saveSyncQueue', e3); }
+    let r = 'fail';
+    try { r = await directSaveEntries(newEntries, 'order'); } catch (e4) { console.error('confirmOrder direct', e4); }
+    if (r !== 'ok') {
+      showToast((r === 'offline' ? 'オフラインで、発注の履歴を保存できませんでした。' : '発注の履歴を保存できませんでした。')
+        + '発注は確定していません。通信できる場所でもう一度お試しください（' + storageUsageText() + '）', 6000);
+      return;
+    }
+    manualHistoryDirectIds = {};
+  }
+
   // Remove confirmed items from cart; keep unselected vendors' items
   const confirmedIds = new Set(targetItems.map(i => i.productId));
   orderCart = orderCart.filter(item => !confirmedIds.has(item.productId));
   if (orderCart.length === 0) {
     selectedOrderVendorIds = null;
   }
-  saveData(DATA);
+  saveData(DATA, enqueueOk ? undefined : { silent: true }); // 直接保存に回した場合、端末が満杯のことを重ねて通知しない
   window._lastChecklistItems = checklistItems;
   showChecklist(checklistItems);
 
