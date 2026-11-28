@@ -3919,16 +3919,17 @@ function buildCompareTable(products, vendors, orderHistory, now) {
     const m = p.demandMeta;
     const manual = !!(m && !m.foreign && Array.isArray(m.pred) && m.pred.some(id => products.some(x => x.id === id)));
     const isToel = !!(vendor && vendor.name === 'ミツイ' && isToelProduct(p));
+    const isUteto = !!(vendor && String(vendor.name).includes('ラボラボ') && !String(p.name).includes('ナシード')); // §12.13 ウトエト（ナシードは含めない）
     const linked = nw.lineage.length > 1;
     const myRefs = refs.get(p.id) || [];
     // §12.12 ② 未設定: 仮の結び付けがなく、東京でなく、旧として使われていない（トエルは全色出すので旧として使われていても対象）
-    const unlinked = !linked && !vs.tokyo.has(p.vendorId) && (isToel || !usedAsOld.has(p.id));
+    const unlinked = !linked && !vs.tokyo.has(p.vendorId) && (isToel || isUteto || !usedAsOld.has(p.id));
     const row = {
       p, vendorName: vendor ? vendor.name : '', vendorShort: vendor ? (vendor.shortName || vendor.name) : '',
-      cur, nw, diff: nw.rec - cur.rec, linked, unlinked, isToel, manual,
+      cur, nw, diff: nw.rec - cur.rec, linked, unlinked, isToel, isUteto, manual,
       has5: !!(prov.systems.get(p.id) && prov.systems.get(p.id).has('⑤')),
     };
-    if (!linked && !unlinked && !isToel) { oldSide++; all.push(Object.assign(row, { bucket: null, tags: [], rowId: ridMap.get(p.id) })); return; }
+    if (!linked && !unlinked && !isToel && !isUteto) { oldSide++; all.push(Object.assign(row, { bucket: null, tags: [], rowId: ridMap.get(p.id) })); return; }
     const cls = compareClassify(row);
     const basis = compareBasisText(nw);
     const notes = [];
@@ -3948,7 +3949,7 @@ function buildCompareTable(products, vendors, orderHistory, now) {
       const hasTableReason = unlinkedReasons.length > 0;
       myRefs.filter(r => r.kind === '旧のみ').forEach(r => unlinkedReasons.push(`対応表の旧のみ: ${r.rowId}`));
       if (!unlinkedReasons.length) unlinkedReasons.push('対応表に行なし');
-      cardWorthy = hasTableReason || isToel || recentIds.has(p.id);
+      cardWorthy = hasTableReason || isToel || isUteto || recentIds.has(p.id);
     }
     all.push(Object.assign(row, {
       bucket: cls.bucket, tags: cls.tags, basis, notes, rowId: ridMap.get(p.id), oldsLine: compareOldsLine(nw), mapRefs,
@@ -3973,7 +3974,29 @@ function buildCompareTable(products, vendors, orderHistory, now) {
     return { key: b.key, title: b.title, note: b.note, heading, rows, nameOnly };
   });
   const shown = buckets.reduce((a, b) => a + b.rows.length + b.nameOnly.length, 0);
-  return { buckets, excluded, counts: { shown, oldSide, noLink: oldSide, total: all.length, excluded: excluded.length, linked: all.filter(r => r.linked).length, unlinked: all.filter(r => r.bucket === 'unlinked').length }, mappingCounts: table.counts };
+  // §12.13 段（トエル＞ウトエト＞その他）→ 小見出し（a低頻度 b差が大きい c未設定 d そのほか）。各商品は1つの段・1つの小見出しだけ。buckets は互換のため残す
+  const RANK_OF = { low: 'a', big: 'b', unlinked: 'c' };
+  const shownRows = all.filter(r => r.bucket);
+  shownRows.forEach(r => { r.group = r.isToel ? 'toel' : (r.isUteto ? 'uteet' : 'other'); r.rank = RANK_OF[r.bucket] || 'd'; });
+  const d5 = r => (r.bucket === 'sw5' ? 0 : (r.bucket === 'manual' ? 1 : 2));
+  const rankSorter = { toel: { a: byDiff, b: byDiff, c: byName, d: byToel }, uteet: { a: byDiff, b: byDiff, c: byName, d: byToel },
+    other: { a: byDiff, b: byDiff, c: byName, d: (a, b) => d5(a) - d5(b) || byName(a, b) } };
+  const GROUPS = [{ key: 'toel', title: 'トエル（ファッション・白髪染め）' }, { key: 'uteet', title: 'ウトエト' }, { key: 'other', title: 'その他' }];
+  const RANKS = [{ rank: 'a', title: '切らせない・低頻度で減る（下限なし注意を含む）' }, { rank: 'b', title: '差が大きい・減る' }, { rank: 'c', title: 'つながり未設定' }, { rank: 'd', title: 'そのほか' }];
+  const groups = GROUPS.map(g => {
+    const mine = shownRows.filter(r => r.group === g.key);
+    const ranks = RANKS.map(k => {
+      const list = mine.filter(r => r.rank === k.rank).sort(rankSorter[g.key][k.rank]);
+      const rows = k.rank === 'c' ? list.filter(r => !r.nameOnly) : list;
+      const nameOnly = k.rank === 'c' ? list.filter(r => r.nameOnly) : [];
+      const heading = k.rank === 'c' ? `${k.title}（カード ${rows.length}件／名前のみ ${nameOnly.length}件）` : `${k.title}（${rows.length}件）`;
+      return { rank: k.rank, title: k.title, heading, rows, nameOnly, count: rows.length + nameOnly.length };
+    }).filter(k => k.count > 0);
+    const cnt = rk => (ranks.find(k => k.rank === rk) || { count: 0 }).count;
+    return { key: g.key, title: g.title, ranks, counts: { total: mine.length, a: cnt('a'), b: cnt('b'), alert: cnt('a') + cnt('b') }, heading: `${g.title}（${mine.length}件）` };
+  });
+  const alert = { toel: groups[0].counts.alert, uteet: groups[1].counts.alert, other: groups[2].counts.alert };
+  return { buckets, groups, alert, excluded, counts: { shown, oldSide, noLink: oldSide, total: all.length, excluded: excluded.length, linked: all.filter(r => r.linked).length, unlinked: all.filter(r => r.bucket === 'unlinked').length }, mappingCounts: table.counts };
 }
 // COMPARE-PURE-END
 
@@ -4175,13 +4198,16 @@ function renderCompareModal() {
     <div style="font-size:12px;color:var(--text-sub);margin-bottom:8px;">${esc(`${COMPARE_EXCLUDE_NOTE}の商材 ${t.counts.excluded}件は切替が無いため、この比較表から外しています`)}`
     + (t.excluded.length ? `<details style="margin-top:4px;"><summary style="cursor:pointer;">外した商品を見る</summary>${t.excluded.map(r => `<div style="padding:2px 0;">${productNameHtml(r.p.name)}（${esc(r.vendorName)}）— ${esc(`${r.brand}（${r.reason}で一致: ${r.hit}）`)}</div>`).join('')}</details>` : '')
     + `</div>`;
-  t.buckets.forEach(b => {
-    html += `<h3 style="font-size:15px;margin:14px 0 4px;color:var(--accent-light);">${esc(b.heading || `${b.title}（${b.rows.length}件）`)}</h3>`
-      + `<div style="font-size:12px;color:var(--text-sub);margin-bottom:4px;">${esc(b.note)}</div>`
-      + (b.rows.length ? b.rows.map(compareCardHtml).join('') : (b.nameOnly && b.nameOnly.length ? '' : '<div style="font-size:12px;color:var(--text-sub);">なし</div>'));
-    if (b.nameOnly && b.nameOnly.length) {
-      html += `<div style="background:var(--surface2);border-radius:12px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:var(--text-sub);">${esc(`発注が180日ない未設定の商品 ${b.nameOnly.length}件:`)} ${b.nameOnly.map(r => `${productNameHtml(r.p.name)}（${esc(r.vendorName)}）`).join('、')}</div>`;
-    }
+  html += `<div style="font-size:13px;font-weight:700;color:var(--warning);margin-bottom:6px;">${esc(`要注意: トエル ${t.alert.toel}件・ウトエト ${t.alert.uteet}件・その他 ${t.alert.other}件`)}</div>`;
+  t.groups.forEach(g => {
+    html += `<h2 style="font-size:17px;margin:20px 0 6px;padding-bottom:4px;border-bottom:2px solid var(--accent-light);">${esc(g.heading)}</h2>`;
+    if (!g.ranks.length) html += '<div style="font-size:12px;color:var(--text-sub);">なし</div>';
+    g.ranks.forEach(k => {
+      html += `<h3 style="font-size:15px;margin:12px 0 4px;color:var(--accent-light);">${esc(k.heading)}</h3>` + k.rows.map(compareCardHtml).join('');
+      if (k.nameOnly.length) {
+        html += `<div style="background:var(--surface2);border-radius:12px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:var(--text-sub);">${esc(`発注が180日ない未設定の商品 ${k.nameOnly.length}件:`)} ${k.nameOnly.map(r => `${productNameHtml(r.p.name)}（${esc(r.vendorName)}）`).join('、')}</div>`;
+      }
+    });
   });
   html += `<div style="font-size:12px;color:var(--text-sub);margin-top:12px;">${esc(`旧の側の商品 ${t.counts.oldSide}件（比較の対象外）`)}</div>`;
   body.innerHTML = html;
