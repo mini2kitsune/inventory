@@ -3004,7 +3004,7 @@ function getOldVendorReference(targetProduct) {
 // MAPPING-PURE-BEGIN
 const MAPPING_WINDOW_DAYS = 180; // 設計書 §2 と同じ窓
 // 殿ご教示 2026-11-22: 下記すべての系統を「確実」として扱う（M=ミント等のメーカー色名との食い違いは注記のみ）
-const MAPPING_CERTAIN_FAMILIES = ['A', 'N', 'V', 'P', 'R', 'M', 'MT', 'LT', 'TE'];
+const MAPPING_CERTAIN_FAMILIES = ['A', 'N', 'V', 'P', 'R', 'M', 'MT', 'LT', 'TE', 'BLUE'];
 // トエル側 Te（テラコッタ）の色番の形。getToelProductCode の結果（大文字化済み）に当てる。
 // 例: TE/8・TE8・TE 8・テラコッタ8・TERRACOTTA/8 → 明度8。明度が無い・読めない名前は拾わず「その他（要確認）」に出す。
 // Te の明度は 12・10・8・6（殿ご教示 2026-11-22）。旧オレンジはこの4つに入れば同じ明度の Te へ結ぶ。入らない明度（14 等）は要確認。
@@ -3017,6 +3017,9 @@ const MAPPING_OLD_NB4_BARE_PATTERN = /^(?:NB\s*[\/\-・.]?\s*4|4\s*NB)$/;
 const MAPPING_COLOR_STORY_PATTERN = /カラーストーリー|(?:^|[^A-Z0-9])CS(?!\s*オアシック)(?:$|[^A-Z0-9])/; // 『CSオアシック』（ヘアマニキュア）はカラーストーリーの略 CS ではない
 const MAPPING_NB3_CODE_PATTERN = /^NB\s*[\/\-・.]?\s*3$/;
 const TOEL_TE_CODE_PATTERN = /^(?:TE|テラコッタ|TERRACOTTA)\s*[\/・.\-]?\s*(\d+)?$/;
+// トエル側 Blue（コントロールライン）の色番の形。例: BLUE・BLUE/8・BLUE8・ブルー8。殿ご教示 2026-11-28: 旧アジアンカラーフェスの Blue → トエル Blue（確実）。
+// トエルの Blue の明度は実データで決まる（推測で足さない）。明度が無い名前は明度なし同士で結ぶ。
+const TOEL_BLUE_CODE_PATTERN = /^(?:BLUE|ブルー)\s*[\/・.\-]?\s*(\d+)?$/;
 // 旧（アジアンカラーフェス）側の色名（カタカナ）と記号（アルファベット）。どちらの表記も同じ系統に解決する。
 const MAPPING_OLD_FAMILIES = {
   A: { aliases: ['アッシュ', 'ASH'], codes: ['A'] },
@@ -3028,10 +3031,13 @@ const MAPPING_OLD_FAMILIES = {
   M: { aliases: ['マット', 'MATTE'], codes: ['M'] },
   LT: { aliases: ['ライトナー', 'LIGHTENER'], codes: ['LT'] },
   TE: { aliases: ['オレンジ', 'ORANGE'], codes: ['OR', 'O'] }, // 旧アジアンカラーフェスのオレンジ → トエル Te（殿ご教示 2026-11-22 Q-D）
+  // 旧アジアンカラーフェスの Blue → トエル Blue（殿ご教示 2026-11-28）。拾うのは完全な語『ブルー』『BLUE』だけ。
+  // 『B』『BL』の略は他色（ブラウン・ブラック）かもしれないので codes は空。ブルーブラック・ブルーグレイ等の別色名は guard で拾わない（語の前後に他のカナ／英字が続けば別語）。
+  BLUE: { aliases: ['ブルー', 'BLUE'], codes: [], guard: { 'ブルー': ['(?<![ァ-ヶー])', '(?![ァ-ヶー])'], 'BLUE': ['(?<![A-Z])', '(?![A-Z])'], other: '(?![\\s\\-/・.]*(?:ブラック|グレイ|グレー|ブラウン|ネイビー|BLACK|GRAY|GREY|BROWN|NAVY))' } },
 };
-const MAPPING_LEVELLESS_FAMILIES = ['LT']; // 明度なしでも系統として扱える（オレンジは明度が無ければ結べないので含めない）
-const MAPPING_FAMILY_ORDER = ['A', 'N', 'M', 'MT', 'V', 'P', 'R', 'LT', 'TE'];
-const MAPPING_FAMILY_LABEL = { A: 'アッシュ', N: 'ナチュラル', V: 'バイオレット', P: 'ピンク', R: 'レッド', MT: 'グレイ', M: 'マット', LT: 'ライトナー', TE: 'オレンジ' };
+const MAPPING_LEVELLESS_FAMILIES = ['LT', 'BLUE']; // 明度なしでも系統として扱える（オレンジは明度が無ければ結べないので含めない）
+const MAPPING_FAMILY_ORDER = ['A', 'N', 'M', 'MT', 'V', 'P', 'R', 'LT', 'TE', 'BLUE'];
+const MAPPING_FAMILY_LABEL = { A: 'アッシュ', N: 'ナチュラル', V: 'バイオレット', P: 'ピンク', R: 'レッド', MT: 'グレイ', M: 'マット', LT: 'ライトナー', TE: 'オレンジ', BLUE: 'ブルー' };
 const MAPPING_SYSTEM_ORDER = ['①', '②', '③④', '⑤', '他'];
 const MAPPING_QUOLINE_PATTERN = /クオライン|コスメ|プリズム|アフターローション|アジャスト/;
 const MAPPING_SOURCES = {
@@ -3070,12 +3076,14 @@ function mappingResolveOldName(name) {
     const levels = [];
     let hit = false;
     def.aliases.forEach(alias => {
-      const esc2 = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const after = s.match(new RegExp(esc2 + '\\s*[/・.\\-]?\\s*(\\d+)'));
-      const before = s.match(new RegExp('(\\d+)\\s*[/・.\\-]?\\s*' + esc2));
+      let esc2 = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      let pre = '';
+      if (def.guard) { pre = def.guard[alias][0]; esc2 = esc2 + def.guard[alias][1] + def.guard.other; } // 語の前後の確認（ブルーブラック等を拾わない）
+      const after = s.match(new RegExp(pre + esc2 + '\\s*[/・.\\-]?\\s*(\\d+)'));
+      const before = s.match(new RegExp('(\\d+)\\s*[/・.\\-]?\\s*' + pre + esc2));
       if (after) { hit = true; levels.push(Number(after[1])); }
       else if (before) { hit = true; levels.push(Number(before[1])); }
-      else if (s.includes(alias)) { hit = true; }
+      else if (def.guard ? new RegExp(pre + esc2).test(s) : s.includes(alias)) { hit = true; }
     });
     def.codes.forEach(code => {
       const withLevel = s.match(new RegExp('(?:^|[^A-Z0-9])' + code + '\\s*[/\\-.・]?\\s*(\\d+)(?:$|[^0-9])'));
@@ -3335,8 +3343,11 @@ function buildMappingTable(products, vendors, orderHistory, now) {
     }
     let family = null; let level = null;
     const teMatch = code.match(TOEL_TE_CODE_PATTERN);
+    const blueMatch = code.match(TOEL_BLUE_CODE_PATTERN);
     if (teMatch) {
       family = 'TE'; level = teMatch[1] === undefined ? null : Number(teMatch[1]);
+    } else if (blueMatch) {
+      family = 'BLUE'; level = blueMatch[1] === undefined ? null : Number(blueMatch[1]);
     } else {
       const ident = getToelReferenceIdentity(p);
       if (ident && Object.prototype.hasOwnProperty.call(MAPPING_OLD_FAMILIES, ident.family)) { family = ident.family; level = ident.level; }
@@ -3349,6 +3360,7 @@ function buildMappingTable(products, vendors, orderHistory, now) {
       const r = resolved.get(o.id);
       if (!r || r.status !== 'ok' || r.family !== family) return false;
       if (family === 'LT') return true;
+      if (family === 'BLUE') return r.level === level; // 明度があれば同明度どうし・無ければ同名（明度なし）どうし
       return r.level !== null && r.level === level;
     });
     const notes = [];
@@ -3362,6 +3374,7 @@ function buildMappingTable(products, vendors, orderHistory, now) {
     });
     const lv = new Set(cands.map(o => resolved.get(o.id).level));
     const reasons = !cands.length ? ['R3'] : (lv.size > 1 ? ['R1'] : []);
+    if (family === 'BLUE') notes.push('Blue はトエルのコントロールライン（出典: Beauty Garage 247482）。旧アジアンカラーフェスの Blue→トエル Blue は殿ご教示（2026-11-28）で確定。トエル Blue の明度は実データで確認し、旧と同じ明度どうしだけ結ぶ（明度が無ければ同名どうし）');
     const teOutOfList = family === 'TE' && !TOEL_TE_LIGHTNESS.includes(level);
     if (teOutOfList) notes.push(`明度${level === null ? 'なし' : level}は Te の明度（${TOEL_TE_LIGHTNESS.join('・')}）に入らないため要確認`);
     const certain = !teOutOfList && !reasons.length && MAPPING_CERTAIN_FAMILIES.includes(family);
@@ -3382,6 +3395,18 @@ function buildMappingTable(products, vendors, orderHistory, now) {
     cands.forEach(o => { if (!getSourceColorIdentity(o.name, 'TE')) notes.push(`既存の参考値計算では拾われない表記「${o.name}」。この表だけ殿ご教示の対応で拾った`); });
     rows.push(mk('①', `Te/${L}`, { id: null, name: `Te/${L}（アプリ内に該当商品名なし）`, vendorName: 'ミツイ' }, cands.map(oldRef), '確実', [], [...new Set(notes)], ['toel', 'asian', 'te', 'asianOrange'],
       { family: 'TE', level: L, sortKey: [0, MAPPING_FAMILY_ORDER.indexOf('TE'), -L], basis: '殿ご教示 2026-11-22' }));
+  });
+
+  // 旧 Blue → トエル Blue。アプリ内にトエル Blue の商品が無いものは『アプリ内に該当商品名なし』と注記して結ぶ（旧の明度ごと・トエル側の明度は推測で足さない）
+  const blueLevels = [...new Set(tokyoP.map(o => resolved.get(o.id)).filter(r => r && r.status === 'ok' && r.family === 'BLUE').map(r => r.level))];
+  blueLevels.forEach(L => {
+    if (rows.some(r => r.family === 'BLUE' && r.level === L)) return;
+    const cands = tokyoP.filter(o => { const r = resolved.get(o.id); return r && r.status === 'ok' && r.family === 'BLUE' && r.level === L; });
+    const label = L === null ? 'Blue' : `Blue/${L}`;
+    const notes = [`トエル ${label} の商品名がアプリ内にありません（殿ご教示 2026-11-28: 旧 Blue→トエル Blue）。トエル側の明度は実データで確認してください（推測で足していません）`];
+    cands.forEach(o => notes.push(`既存の参考値計算では拾われない表記「${o.name}」。この表だけ殿ご教示の対応で拾った`));
+    rows.push(mk('①', label, { id: null, name: `${label}（アプリ内に該当商品名なし）`, vendorName: 'ミツイ' }, cands.map(oldRef), '確実', [], [...new Set(notes)], ['toel', 'asian'],
+      { family: 'BLUE', level: L, sortKey: [0, MAPPING_FAMILY_ORDER.indexOf('BLUE'), -(L || 0)], basis: '殿ご教示 2026-11-28' }));
   });
 
   // ③④ ラボラボ（ウトエト）・その他（ナシード）
