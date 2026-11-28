@@ -3033,7 +3033,7 @@ const MAPPING_OLD_FAMILIES = {
   TE: { aliases: ['オレンジ', 'ORANGE'], codes: ['OR', 'O'] }, // 旧アジアンカラーフェスのオレンジ → トエル Te（殿ご教示 2026-11-22 Q-D）
   // 旧アジアンカラーフェスの Blue → トエル Blue（殿ご教示 2026-11-28）。拾うのは完全な語『ブルー』『BLUE』だけ。
   // 『B』『BL』の略は他色（ブラウン・ブラック）かもしれないので codes は空。ブルーブラック・ブルーグレイ等の別色名は guard で拾わない（語の前後に他のカナ／英字が続けば別語）。
-  BLUE: { aliases: ['ブルー', 'BLUE'], codes: [], guard: { 'ブルー': ['(?<![ァ-ヶー])', '(?![ァ-ヶー])'], 'BLUE': ['(?<![A-Z])', '(?![A-Z])'], other: '(?![\\s\\-/・.]*(?:ブラック|グレイ|グレー|ブラウン|ネイビー|BLACK|GRAY|GREY|BROWN|NAVY))' } },
+  BLUE: { aliases: ['ブルー', 'BLUE'], codes: [], guard: { 'ブルー': ['(?:^|[^ァ-ヶー])', '(?![ァ-ヶー])'], 'BLUE': ['(?:^|[^A-Z])', '(?![A-Z])'], other: '(?![\\s\\-/・.]*(?:ブラック|グレイ|グレー|ブラウン|ネイビー|BLACK|GRAY|GREY|BROWN|NAVY))' } },
 };
 const MAPPING_LEVELLESS_FAMILIES = ['LT', 'BLUE']; // 明度なしでも系統として扱える（オレンジは明度が無ければ結べないので含めない）
 const MAPPING_FAMILY_ORDER = ['A', 'N', 'M', 'MT', 'V', 'P', 'R', 'LT', 'TE', 'BLUE'];
@@ -3080,7 +3080,7 @@ function mappingResolveOldName(name) {
       let pre = '';
       if (def.guard) { pre = def.guard[alias][0]; esc2 = esc2 + def.guard[alias][1] + def.guard.other; } // 語の前後の確認（ブルーブラック等を拾わない）
       const after = s.match(new RegExp(pre + esc2 + '\\s*[/・.\\-]?\\s*(\\d+)'));
-      const before = s.match(new RegExp('(\\d+)\\s*[/・.\\-]?\\s*' + pre + esc2));
+      const before = s.match(new RegExp('(\\d+)\\s*[/・.\\-]?\\s*' + esc2)); // 前は数字と区切りなので pre は付けない（lookbehind は iOS 16.4 未満で使えないため不使用）
       if (after) { hit = true; levels.push(Number(after[1])); }
       else if (before) { hit = true; levels.push(Number(before[1])); }
       else if (def.guard ? new RegExp(pre + esc2).test(s) : s.includes(alias)) { hit = true; }
