@@ -3614,8 +3614,14 @@ const COMPARE_EXCLUDE_RULES = [
   { brand: 'オージュア', words: ['オージュア', 'Aujua'] },
   { brand: 'ヴィラロドラ', words: ['ヴィラロドラ', 'Villa Lodola'] },
   { brand: 'イーラル', words: ['イーラル'] },
+  // 殿ご指示 2026-11-28: 東京理美容商会で発注していたものではなく切替の依頼対象でもない。表記は殿のご指示＋ブランド公式の欧文。実データでの正確な表記は未確認（data/・CSV・migrations に該当なし）ゆえ推測で足さない。
+  { brand: 'アディクシー', words: ['アディクシー', 'Addicthy'] },
+  { brand: 'くりすたる', words: ['クリスタル', 'Crystal'] },
+  { brand: 'イヤーキャップ', words: ['イヤーキャップ', '耳キャップ', 'ear cap', 'earcap'] },
+  { brand: 'その他雑貨', words: ['その他雑貨', '雑貨'] },
 ];
-const COMPARE_EXCLUDE_NOTE = 'オージュア・ヴィラロドラ・イーラル';
+// 除外ルールに当たっても残す商品: 手入力リンクがある（殿が個別に設定済み）・東京理美容商会の商品・対応表の確実行に関わる商品（切替の対象）
+const COMPARE_EXCLUDE_NOTE = 'オージュア・ヴィラロドラ・イーラル・アディクシー・くりすたる・イヤーキャップ・その他雑貨';
 // NFKC・大小文字・ひらがな→カタカナ・長音（ー）と中点（・）の除去・ヴ行→バ行・空白の圧縮
 function compareFoldName(s) {
   let t = String(s === undefined || s === null ? '' : s).normalize('NFKC').toLowerCase();
@@ -3905,7 +3911,8 @@ function buildCompareTable(products, vendors, orderHistory, now) {
   products.forEach(p => {
     if (!compareIsTarget(p, vendors)) return;
     const vendor = vOf(p.vendorId);
-    const ex = compareExcludeMatch(p.name, vendor ? vendor.name : '');
+    const exKeep = vs.tokyo.has(p.vendorId) || (p.demandMeta && !p.demandMeta.foreign && Array.isArray(p.demandMeta.pred) && p.demandMeta.pred.some(id => products.some(x => x.id === id))) || (refs.get(p.id) || []).some(r => r.judge === '確実');
+    const ex = exKeep ? null : compareExcludeMatch(p.name, vendor ? vendor.name : '');
     if (ex) { excluded.push({ p, vendorName: vendor ? vendor.name : '', brand: ex.brand, reason: ex.reason, hit: ex.hit, rowId: ridMap.get(p.id) }); return; }
     const nw = compareNewRecommendation(p, ctx);
     const cur = nw.cur;
